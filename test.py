@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
+import time
 from typing import Optional
 import cv2
 from scipy.spatial import distance
@@ -140,7 +141,7 @@ def main():
     print("[INFO]: Loaded models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
-    video_path = "./test.mp4"
+    video_path = "./game-2.mp4"
 
     scenes = scene_detect(video_path)
     print("[INFO]:", scenes)
@@ -250,7 +251,7 @@ def main():
     minimap = get_court_img()
 
     out = cv2.VideoWriter(
-        "output.mp4",
+        f"output_{time.time()}.mp4",
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (1280, 720),
@@ -330,7 +331,7 @@ def main():
 
         frame = cv2.putText(
             frame,
-            f"Speed: {speed_before_bounce[speed_indices[-1]].speed:.2f} m/s, Time: {speed_before_bounce[speed_indices[-1]].time_diff:.2f} s, Distance: {speed_before_bounce[speed_indices[-1]].distance:.2f} m",
+            f"Speed: {speed_before_bounce[speed_indices[-1]].speed:.2f} m/s\nTime: {speed_before_bounce[speed_indices[-1]].time_diff:.2f} s\nDistance: {speed_before_bounce[speed_indices[-1]].distance:.2f} m",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
