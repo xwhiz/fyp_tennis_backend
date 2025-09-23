@@ -204,6 +204,8 @@ def main():
     speed_before_bounce = dict()
     for bounce_index, source_indices in change_before_bounce.items():
         destination = transformed_track[bounce_index]
+        if destination[0] is None:
+            continue
         sources = []
         for index, source in source_indices:
             if source[0] is not None:
@@ -228,6 +230,8 @@ def main():
                 [transformed_track[previous_index], transformed_track[next_index]],
                 axis=0,
             )
+            if source[0] is None:
+                continue
             sources.append(source)
 
         pixel_distance = np.mean(
