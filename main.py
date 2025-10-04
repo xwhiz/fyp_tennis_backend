@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from collections import defaultdict
@@ -22,8 +23,9 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from scipy.spatial import distance
+from scipy.spatial.distance import euclidean
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from core.ball_detector import BallDetector
@@ -37,16 +39,26 @@ from core.stream_infer import (
 )
 from core.utils import get_court_img, perspective_transform_point, scene_detect
 from db.engine import Engine
+from db.utils import (
+    save_ball_track_in_db,
+    save_direction_change_indices_in_db,
+    save_speed_in_db,
+    save_video_paths_in_db,
+)
 from models.background_task_model import BackgroundTask
+from models.ball_track_model import BallTrackModel
+from models.bounces_model import BouncesModel
+from models.direction_change_indices_model import DirectionChangeIndicesModel
 from models.process_video_response import ProcessVideoResponse
-from db.utils import create_all, update_task_status, SessionDep
+from db.utils import create_all, save_bounces_in_db, update_task_status, SessionDep
+from models.speed_at import SpeedAt
+from models.speed_model import SpeedModel
+from models.video_paths_model import VideoPathsModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Global thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=2)
-
-engine = Engine.instance()
 
 
 @asynccontextmanager
@@ -72,29 +84,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+os.makedirs("output", exist_ok=True)
+
+# static files
+app.mount("/output", StaticFiles(directory="output"), name="output")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 
 def process_video_background(task_id: int, video_path: str, name: str):
     """Background function to process video"""
     try:
-        update_task_status(engine, task_id, "processing", 0, "Processing video")
+        update_task_status(task_id, "processing", 0, "Processing video")
 
-        process_request(video_path, task_id)
+        process_request(video_path, task_id, name)
 
-        update_task_status(
-            engine, task_id, "completed", 9, "Video processed successfully"
-        )
+        update_task_status(task_id, "completed", 9, "Video processed successfully")
 
     except Exception as e:
         print(f"Error processing video {task_id}: {str(e)}")
-        update_task_status(engine, task_id, "failed", 0, "Error processing video")
-
-
-@dataclass
-class SpeedAt:
-    speed: float
-    time_diff: float
-    timestamp: float
-    distance: float
+        update_task_status(task_id, "failed", 0, "Error processing video")
 
 
 def process_frames(
@@ -116,7 +124,7 @@ def process_frames(
     return ball_track, bounces, homography_matrices, kps_court
 
 
-def process_request(video_path: str, task_id: int):
+def process_request(video_path: str, task_id: int, name: str):
     update_task_status(task_id, "processing", 0, "Loading models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
@@ -145,41 +153,43 @@ def process_request(video_path: str, task_id: int):
         frames,
         fps,
     )
-
-    # ball_track, bounces = get_ball_track_and_bounces_stream_infer(video_path, device)
-    # homography_matrices, kps_court = court_detector_stream_infer(video_path, device)
-
     transformed_track = [
         perspective_transform_point(point, homography_matrices[i])
         for i, point in enumerate(ball_track)
     ]
 
+    save_ball_track_in_db(task_id, transformed_track)
+    save_bounces_in_db(task_id, bounces)
+
     update_task_status(task_id, "processing", 5, "Finding ball hits")
-    direction_change_indices = get_direction_change_indices(ball_track, buffer_length=8)
+    direction_change_indices = list(
+        get_direction_change_indices(ball_track, buffer_length=8)
+    )
 
     # combine indices that have distance less than 10
-    test_1 = []
+    indices = []
     for i, ind in enumerate(sorted(direction_change_indices)):
         if i == 0:
-            test_1.append(i)
+            indices.append(ind)
             continue
-        if ind - test_1[-1] < 6:
+        if ind - indices[-1] < 6:
             # test_1[-1] = ind
             pass
         else:
-            test_1.append(ind)
+            indices.append(ind)
 
     change_before_bounce = defaultdict(list)
     outer = 0
     for i in bounces:
-        for j in test_1[outer:]:
+        for j in indices[outer:]:
             if j < i:
                 frame_diff = i - j
                 if frame_diff >= 15 and frame_diff <= int(2 * fps):
                     change_before_bounce[i].append((j, transformed_track[j]))
         outer += 1
 
-    direction_change_indices = test_1
+    direction_change_indices = indices
+    save_direction_change_indices_in_db(task_id, direction_change_indices)
 
     update_task_status(task_id, "processing", 6, "Calculating speed")
 
@@ -216,9 +226,7 @@ def process_request(video_path: str, task_id: int):
                 continue
             sources.append(source)
 
-        pixel_distance = np.mean(
-            [distance.euclidean(source, destination) for source in sources]
-        )
+        pixel_distance = np.mean([euclidean(source, destination) for source in sources])
         meter_distance = pixel_distance * PIXEL_TO_METER_RATIO
         time_difference = (
             bounce_index - max(source_indices, key=lambda x: x[0])[0]
@@ -231,11 +239,15 @@ def process_request(video_path: str, task_id: int):
         )
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
+    save_speed_in_db(task_id, speed_before_bounce)
 
     minimap = get_court_img()
 
+    output_path = f"output/output_{task_id}_{time.time()}.mp4"
+    minimap_path = f"output/output_{task_id}_minimap_{time.time()}.mp4"
+
     out = cv2.VideoWriter(
-        f"output_{time.time()}.mp4",
+        output_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (1280, 720),
@@ -315,30 +327,34 @@ def process_request(video_path: str, task_id: int):
             :,
         ] = minimap_resized
 
-        frame = cv2.putText(
-            frame,
-            f"Speed: {speed_before_bounce[speed_indices[-1]].speed:.2f} km/hr Time: {speed_before_bounce[speed_indices[-1]].time_diff:.2f} s Distance: {speed_before_bounce[speed_indices[-1]].distance:.2f} m",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2,
-        )
+        if speed_indices:
+            speed_index = speed_indices[-1]
+            speed = speed_before_bounce[speed_index].speed
+            time_diff = speed_before_bounce[speed_index].time_diff
+            distance = speed_before_bounce[speed_index].distance
+            text = f"Speed: {speed:.2f} km/hr Time: {time_diff:.2f} s Distance: {distance:.2f} m"
+
+            frame = cv2.putText(
+                frame,
+                text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2,
+            )
 
         if i > speed_indices[-1] and len(speed_indices) > 1:
             speed_indices.pop()
 
         out.write(frame)
 
-    with open("time_speed.json", "w") as f:
-        f.write(str(speed_before_bounce))
-
     out.release()
 
     minimap = get_court_img()
     h, w, _ = minimap.shape
     minimap_out = cv2.VideoWriter(
-        f"output_{time.time()}_minimap.mp4",
+        minimap_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (w, h),
@@ -371,6 +387,8 @@ def process_request(video_path: str, task_id: int):
 
         minimap = minimap_copy.copy()
     minimap_out.release()
+
+    save_video_paths_in_db(task_id, name, output_path, minimap_path)
 
 
 @app.get("/all_tasks")
@@ -437,7 +455,7 @@ async def process_video(
     process_id = str(uuid.uuid4())
 
     # Store the process in database
-    with Session(engine) as session:
+    with Session(Engine.instance()) as session:
         task = BackgroundTask(
             id=None,  # Let SQLModel auto-generate
             progress=0,
@@ -464,6 +482,90 @@ async def process_video(
             "name": name,
             "file_path": file_path,
         },
+    }
+
+
+@app.get("/get_video_paths/{task_id}")
+def get_video_paths(task_id: int, session: SessionDep):
+    statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
+    video_paths = session.exec(statement).first()
+    return {
+        "success": True,
+        "data": video_paths,
+    }
+
+
+@app.get("/get_speed_stats/{task_id}")
+def get_speed_stats(task_id: int, session: SessionDep):
+    statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
+    speed_stats = session.exec(statement).first()
+    return {
+        "success": True,
+        "data": speed_stats,
+    }
+
+
+@app.get("/get_ball_track/{task_id}")
+def get_ball_track(task_id: int, session: SessionDep):
+    statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
+    ball_track = session.exec(statement).first()
+    return {
+        "success": True,
+        "data": ball_track,
+    }
+
+
+@app.get("/get_bounces/{task_id}")
+def get_bounces(task_id: int, session: SessionDep):
+    statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
+    bounces = session.exec(statement).first()
+    return {
+        "success": True,
+        "data": bounces,
+    }
+
+
+@app.get("/get_direction_change_indices/{task_id}")
+def get_direction_change_indices_api(task_id: int, session: SessionDep):
+    statement = select(DirectionChangeIndicesModel).where(
+        DirectionChangeIndicesModel.task_id == task_id
+    )
+    direction_change_indices = session.exec(statement).first()
+    return {
+        "success": True,
+        "data": direction_change_indices,
+    }
+
+
+@app.get("/all-stats/{task_id}")
+def get_all_stats(task_id: int, session: SessionDep):
+    video_paths = session.exec(
+        select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
+    ).first()
+    speed_stats = session.exec(
+        select(SpeedModel).where(SpeedModel.task_id == task_id)
+    ).first()
+    ball_track = session.exec(
+        select(BallTrackModel).where(BallTrackModel.task_id == task_id)
+    ).first()
+    bounces = session.exec(
+        select(BouncesModel).where(BouncesModel.task_id == task_id)
+    ).first()
+    direction_change_indices = session.exec(
+        select(DirectionChangeIndicesModel).where(
+            DirectionChangeIndicesModel.task_id == task_id
+        )
+    ).first()
+    return {
+        "success": True,
+        "data": {
+            "video_paths": video_paths,
+            "speed_stats": speed_stats,
+            "ball_track": ball_track,
+            "bounces": bounces,
+            "direction_change_indices": direction_change_indices,
+        },
+        "progress": get_task_progress(task_id, session),
     }
 
 
