@@ -506,7 +506,9 @@ async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True
 async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
     speed_stats = session.exec(statement).first()
-    speed_stats.speed = json.loads(speed_stats.speed or "{}")
+    speed_stats.speed = (
+        None if speed_stats.speed is None else json.loads(speed_stats.speed)
+    )
 
     if is_api:
         return {
@@ -521,7 +523,9 @@ async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True
 async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
     ball_track = session.exec(statement).first()
-    ball_track.ball_track = json.loads(ball_track.ball_track or "{}")
+    ball_track.ball_track = (
+        None if ball_track.ball_track is None else json.loads(ball_track.ball_track)
+    )
     if is_api:
         return {
             "success": True,
@@ -535,7 +539,7 @@ async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True)
 async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
     bounces = session.exec(statement).first()
-    bounces.bounces = json.loads(bounces.bounces or "{}")
+    bounces.bounces = None if bounces.bounces is None else json.loads(bounces.bounces)
     if is_api:
         return {
             "success": True,
@@ -553,8 +557,10 @@ async def get_direction_change_indices_api(
         DirectionChangeIndicesModel.task_id == task_id
     )
     direction_change_indices = session.exec(statement).first()
-    direction_change_indices.direction_change_indices = json.loads(
-        direction_change_indices.direction_change_indices or "{}"
+    direction_change_indices.direction_change_indices = (
+        None
+        if direction_change_indices.direction_change_indices is None
+        else json.loads(direction_change_indices.direction_change_indices)
     )
     if is_api:
         return {
