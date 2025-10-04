@@ -6,8 +6,9 @@ from db.engine import Engine
 from models.background_task_model import BackgroundTask
 
 
-def create_db_and_tables(engine):
-    SQLModel.metadata.create_all(engine)
+def create_all():
+    """Create all tables from the models"""
+    SQLModel.metadata.create_all(Engine.instance())
 
 
 def get_session():

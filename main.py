@@ -39,7 +39,7 @@ from core.utils import get_court_img, perspective_transform_point, scene_detect
 from db.engine import Engine
 from models.background_task_model import BackgroundTask
 from models.process_video_response import ProcessVideoResponse
-from db.utils import create_db_and_tables, update_task_status, SessionDep
+from db.utils import create_all, update_task_status, SessionDep
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -51,11 +51,23 @@ engine = Engine.instance()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    create_db_and_tables(engine)
+    create_all()
+
+    # Load models
+    app.ball_detector = BallDetector("./track_net_weights.pt", device)
+    app.court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
+    app.person_detector = PersonDetector(device)
+    app.bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
+    print("All models loaded successfully")
+
     yield
+
     # Shutdown
     executor.shutdown(wait=True)
+    app.ball_detector = None
+    app.court_detector = None
+    app.person_detector = None
+    app.bounce_detector = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -87,39 +99,29 @@ class SpeedAt:
 
 def process_frames(
     task_id: int,
-    ball_detector: BallDetector,
-    court_detector: CourtDetectorNet,
-    person_detector: PersonDetector,
-    bounce_detector: BounceDetector,
     frames: list,
     fps: int,
 ):
     update_task_status(task_id, "processing", 2, "Detecting ball")
-    ball_track = ball_detector.infer_model(frames)
+    ball_track = app.ball_detector.infer_model(frames)
     update_task_status(task_id, "processing", 3, "Detecting court")
-    homography_matrices, kps_court = court_detector.infer_model(frames)
+    homography_matrices, kps_court = app.court_detector.infer_model(frames)
     # persons_top, persons_bottom = person_detector.track_players(
     #     frames_in_one_second, homography_matrices, filter_players=False
     update_task_status(task_id, "processing", 4, "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
-    bounces = bounce_detector.predict(x_ball, y_ball)
+    bounces = app.bounce_detector.predict(x_ball, y_ball)
 
     return ball_track, bounces, homography_matrices, kps_court
 
 
 def process_request(video_path: str, task_id: int):
     update_task_status(task_id, "processing", 0, "Loading models")
-    ball_detector = BallDetector("./track_net_weights.pt", device)
-    court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
-    person_detector = PersonDetector(device)
-    bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
-    print("[INFO]: Loaded models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
-
-    scenes = scene_detect(video_path)
-    print("[INFO]:", scenes)
+    # scenes = scene_detect(video_path)
+    # print("[INFO]:", scenes)
 
     update_task_status(task_id, "processing", 1, "Loading video")
 
@@ -140,10 +142,6 @@ def process_request(video_path: str, task_id: int):
 
     ball_track, bounces, homography_matrices, kps_court = process_frames(
         task_id,
-        ball_detector,
-        court_detector,
-        person_detector,
-        bounce_detector,
         frames,
         fps,
     )
@@ -375,8 +373,18 @@ def process_request(video_path: str, task_id: int):
     minimap_out.release()
 
 
-@app.get("/process_video/{process_id}")
-def get_process_video(process_id: int, session: SessionDep):
+@app.get("/all_tasks")
+def get_all_tasks(session: SessionDep):
+    statement = select(BackgroundTask)
+    tasks = session.exec(statement).all()
+    return {
+        "success": True,
+        "data": tasks,
+    }
+
+
+@app.get("/task_progress/{process_id}")
+def get_task_progress(process_id: int, session: SessionDep):
     # Query the database for the process
     statement = select(BackgroundTask).where(BackgroundTask.id == process_id)
     task = session.exec(statement).first()
