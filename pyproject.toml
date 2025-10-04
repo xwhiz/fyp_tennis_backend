@@ -19,4 +19,5 @@ dependencies = [
     "ultralytics",
     "supervision",
     "fastapi[standard]>=0.118.0",
+    "sqlmodel>=0.0.25",
 ]

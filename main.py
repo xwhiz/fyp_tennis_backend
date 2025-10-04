@@ -1,21 +1,90 @@
-from collections import defaultdict
-from dataclasses import dataclass
+import asyncio
+import threading
 import time
-from typing import Optional
-import cv2
-from scipy.spatial import distance
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated
 
-from ball_detector import BallDetector
-from bounce_detector import BounceDetector
-from court_detection_net import CourtDetectorNet
-from court_reference import CourtReference
-from person_detector import PersonDetector
-from utils import scene_detect
+import cv2
+import numpy as np
+import torch
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from pydantic import BaseModel
+from scipy.spatial import distance
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+
+from core.ball_detector import BallDetector
+from core.bounce_detector import BounceDetector
+from core.court_detection_net import CourtDetectorNet
+from core.get_direction_change_indices import get_direction_change_indices
+from core.person_detector import PersonDetector
+from core.stream_infer import (
+    court_detector_stream_infer,
+    get_ball_track_and_bounces_stream_infer,
+)
+from core.utils import get_court_img, perspective_transform_point, scene_detect
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Global thread pool for background tasks
+executor = ThreadPoolExecutor(max_workers=2)
+
+
+def update_task_status(
+    task_id: int, status: str, progress: int = None, description: str = None
+):
+    """Update task status in database"""
+    with Session(engine) as session:
+        statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+        task = session.exec(statement).first()
+        if task:
+            task.status = status
+            task.updated_at = datetime.now()
+            if description is not None:
+                task.description = description
+            if progress is not None:
+                task.progress = progress
+            session.add(task)
+            session.commit()
+
+
+def process_video_background(task_id: int, video_path: str, name: str):
+    """Background function to process video"""
+    try:
+        update_task_status(task_id, "processing", 0, "Processing video")
+
+        process_request(video_path, task_id)
+
+        update_task_status(task_id, "completed", 9, "Video processed successfully")
+
+    except Exception as e:
+        print(f"Error processing video {task_id}: {str(e)}")
+        update_task_status(task_id, "failed", 0, "Error processing video")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    create_db_and_tables()
+    yield
+    # Shutdown
+    executor.shutdown(wait=True)
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @dataclass
@@ -26,39 +95,22 @@ class SpeedAt:
     distance: float
 
 
-def load_ball_detector(path_model: str):
-    ball_detector = BallDetector(path_model, device)
-    return ball_detector
-
-
-def load_court_detector(path_model: str):
-    court_detector = CourtDetectorNet(path_model, device)
-    return court_detector
-
-
-def load_person_detector():
-    person_detector = PersonDetector(device)
-    return person_detector
-
-
-def load_bounce_detector(path_model: str):
-    bounce_detector = BounceDetector(path_model)
-    return bounce_detector
-
-
 def process_frames(
+    task_id: int,
     ball_detector: BallDetector,
     court_detector: CourtDetectorNet,
     person_detector: PersonDetector,
     bounce_detector: BounceDetector,
-    frames_in_one_second: list,
+    frames: list,
     fps: int,
 ):
-    ball_track = ball_detector.infer_model(frames_in_one_second)
-    homography_matrices, kps_court = court_detector.infer_model(frames_in_one_second)
+    update_task_status(task_id, "processing", 2, "Detecting ball")
+    ball_track = ball_detector.infer_model(frames)
+    update_task_status(task_id, "processing", 3, "Detecting court")
+    homography_matrices, kps_court = court_detector.infer_model(frames)
     # persons_top, persons_bottom = person_detector.track_players(
     #     frames_in_one_second, homography_matrices, filter_players=False
-    # )
+    update_task_status(task_id, "processing", 4, "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
     bounces = bounce_detector.predict(x_ball, y_ball)
@@ -66,87 +118,20 @@ def process_frames(
     return ball_track, bounces, homography_matrices, kps_court
 
 
-def get_slope(values: list[float]) -> float:
-    if len(values) < 2:
-        return 0
-
-    p = np.polyfit(range(len(values)), values, 1)
-    return p[0]
-
-
-def get_direction_change_indices(
-    ball_track: list[tuple[Optional[float], Optional[float]]],
-    buffer_length: int = 15,
-    slope_threshold: float = 1e-3,
-):
-    """
-    Analyze `buffer_length` frames before and after the current frame to determine if the ball is changing direction
-    """
-    direction_change_indices = []
-    for i in range(buffer_length, len(ball_track) - buffer_length):
-        prev_track = [
-            ball_track[i - buffer_length + j]
-            for j in range(0, buffer_length)
-            if ball_track[i - buffer_length + j][1] is not None
-        ]
-        next_track = [
-            ball_track[i + j]
-            for j in range(0, buffer_length)
-            if ball_track[i + j][1] is not None
-        ]
-
-        if len(prev_track) == 0 or len(next_track) == 0:
-            continue
-
-        y_prev = [float(val[1]) if val[1] > 0 else 0 for val in prev_track]
-        y_next = [float(val[1]) if val[1] > 0 else 0 for val in next_track]
-
-        slope_prev = get_slope(y_prev)
-        slope_next = get_slope(y_next)
-
-        changed = (
-            (slope_prev * slope_next) < 0
-            and (abs(slope_prev) > slope_threshold)
-            and (abs(slope_next) > slope_threshold)
-        )
-        if changed:
-            direction_change_indices.append(i)
-
-    return set(direction_change_indices)
-
-
-def prespective_transform_point(
-    point: tuple[Optional[float], Optional[float]],
-    homography_matrix: Optional[np.ndarray],
-):
-    if point[0] is None or homography_matrix is None:
-        return point
-
-    point = np.array(point, dtype=np.float32).reshape(1, 1, 2)
-    point = cv2.perspectiveTransform(point, homography_matrix)
-    return point[0, 0, 0], point[0, 0, 1]
-
-
-def get_court_img():
-    court_reference = CourtReference()
-    court = court_reference.build_court_reference()
-    court = cv2.dilate(court, np.ones((10, 10), dtype=np.uint8))
-    court_img = (np.stack((court, court, court), axis=2) * 255).astype(np.uint8)
-    return court_img
-
-
-def main():
-    ball_detector = load_ball_detector("./track_net_weights.pt")
-    court_detector = load_court_detector("./model_tennis_court_det.pt")
-    person_detector = load_person_detector()
-    bounce_detector = load_bounce_detector("./ctb_regr_bounce.cbm")
+def process_request(video_path: str, task_id: int):
+    update_task_status(task_id, "processing", 0, "Loading models")
+    ball_detector = BallDetector("./track_net_weights.pt", device)
+    court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
+    person_detector = PersonDetector(device)
+    bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
     print("[INFO]: Loaded models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
-    video_path = "./game-2.mp4"
 
     scenes = scene_detect(video_path)
     print("[INFO]:", scenes)
+
+    update_task_status(task_id, "processing", 1, "Loading video")
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -164,6 +149,7 @@ def main():
     cap.release()
 
     ball_track, bounces, homography_matrices, kps_court = process_frames(
+        task_id,
         ball_detector,
         court_detector,
         person_detector,
@@ -172,11 +158,15 @@ def main():
         fps,
     )
 
+    # ball_track, bounces = get_ball_track_and_bounces_stream_infer(video_path, device)
+    # homography_matrices, kps_court = court_detector_stream_infer(video_path, device)
+
     transformed_track = [
-        prespective_transform_point(point, homography_matrices[i])
+        perspective_transform_point(point, homography_matrices[i])
         for i, point in enumerate(ball_track)
     ]
 
+    update_task_status(task_id, "processing", 5, "Finding ball hits")
     direction_change_indices = get_direction_change_indices(ball_track, buffer_length=8)
 
     # combine indices that have distance less than 10
@@ -202,6 +192,8 @@ def main():
         outer += 1
 
     direction_change_indices = test_1
+
+    update_task_status(task_id, "processing", 6, "Calculating speed")
 
     speed_before_bounce = dict()
     for bounce_index, source_indices in change_before_bounce.items():
@@ -252,8 +244,6 @@ def main():
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
 
-    print(speed_before_bounce)
-
     minimap = get_court_img()
 
     out = cv2.VideoWriter(
@@ -266,6 +256,8 @@ def main():
     # Minimap dimensions
     width_minimap = 166
     height_minimap = 350
+
+    update_task_status(task_id, "processing", 7, "Creating annotated video")
 
     for i in range(len(frames)):
         frame = frames[i].copy()
@@ -363,6 +355,7 @@ def main():
         fps,
         (w, h),
     )
+    update_task_status(task_id, "processing", 8, "Creating minimap video")
     for i in range(len(transformed_track) - 1):
         minimap_copy = minimap.copy()
         if (
@@ -392,5 +385,120 @@ def main():
     minimap_out.release()
 
 
+class BackgroundTask(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    progress: int = Field(default=0)
+    total_steps: int = Field(default=9)
+    status: str = Field(default="pending")
+    video_path: str = Field(default="")
+    description: str = Field(default="")
+    created_at: datetime = Field(default=datetime.now())
+    updated_at: datetime = Field(default=datetime.now())
+
+
+engine = create_engine(
+    "sqlite:///./database.db", connect_args={"check_same_thread": False}
+)
+
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
+@app.get("/process_video/{process_id}")
+def get_process_video(process_id: int, session: SessionDep):
+    # Query the database for the process
+    statement = select(BackgroundTask).where(BackgroundTask.id == process_id)
+    task = session.exec(statement).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    return {
+        "success": True,
+        "data": {
+            "process_id": task.id,
+            "progress": task.progress,
+            "status": task.status,
+            "description": task.description,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        },
+    }
+
+
+class ProcessVideoRequest(BaseModel):
+    name: str
+
+
+@app.post("/process_video")
+async def process_video(name: str = Form(...), video_file: UploadFile = File(...)):
+    # Validate file type
+    if not video_file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="File must be a video")
+
+    # Create a unique filename to avoid conflicts
+    import uuid
+
+    file_extension = (
+        video_file.filename.split(".")[-1] if "." in video_file.filename else "mp4"
+    )
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = f"./uploads/{unique_filename}"
+
+    # Create uploads directory if it doesn't exist
+    import os
+
+    os.makedirs("./uploads", exist_ok=True)
+
+    # Save the uploaded file
+    with open(file_path, "wb") as buffer:
+        content = await video_file.read()
+        buffer.write(content)
+
+    # Generate a process ID
+    process_id = str(uuid.uuid4())
+
+    # Store the process in database
+    with Session(engine) as session:
+        task = BackgroundTask(
+            id=None,  # Let SQLModel auto-generate
+            progress=0,
+            status="pending",
+            video_path=file_path,
+            description=f"Processing video: {name}",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        process_id = str(task.id)
+
+    # Start background processing
+    executor.submit(process_video_background, int(process_id), file_path, name)
+
+    return {
+        "success": True,
+        "message": "Video uploaded and queued for processing",
+        "data": {
+            "process_id": process_id,
+            "filename": video_file.filename,
+            "name": name,
+            "file_path": file_path,
+        },
+    }
+
+
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=7000)
