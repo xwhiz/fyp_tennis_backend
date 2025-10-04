@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 import time
@@ -402,7 +403,7 @@ def get_all_tasks(session: SessionDep):
 
 
 @app.get("/task_progress/{process_id}")
-def get_task_progress(process_id: int, session: SessionDep):
+def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True):
     # Query the database for the process
     statement = select(BackgroundTask).where(BackgroundTask.id == process_id)
     task = session.exec(statement).first()
@@ -410,18 +411,21 @@ def get_task_progress(process_id: int, session: SessionDep):
     if not task:
         raise HTTPException(status_code=404, detail="Process not found")
 
-    return {
-        "success": True,
-        "data": {
-            "process_id": task.id,
-            "progress": task.progress,
-            "total_steps": task.total_steps,
-            "status": task.status,
-            "description": task.description,
-            "created_at": task.created_at,
-            "updated_at": task.updated_at,
-        },
-    }
+    if is_api:
+        return {
+            "success": True,
+            "data": {
+                "process_id": task.id,
+                "progress": task.progress,
+                "total_steps": task.total_steps,
+                "status": task.status,
+                "description": task.description,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+            },
+        }
+    else:
+        return task
 
 
 @app.post("/process_video")
@@ -486,86 +490,95 @@ async def process_video(
 
 
 @app.get("/get_video_paths/{task_id}")
-def get_video_paths(task_id: int, session: SessionDep):
+async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
     video_paths = session.exec(statement).first()
-    return {
-        "success": True,
-        "data": video_paths,
-    }
+    if is_api:
+        return {
+            "success": True,
+            "data": video_paths,
+        }
+    else:
+        return video_paths
 
 
 @app.get("/get_speed_stats/{task_id}")
-def get_speed_stats(task_id: int, session: SessionDep):
+async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
     speed_stats = session.exec(statement).first()
-    return {
-        "success": True,
-        "data": speed_stats,
-    }
+    speed_stats.speed = json.loads(speed_stats.speed)
+
+    if is_api:
+        return {
+            "success": True,
+            "data": speed_stats,
+        }
+    else:
+        return speed_stats
 
 
 @app.get("/get_ball_track/{task_id}")
-def get_ball_track(task_id: int, session: SessionDep):
+async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
     ball_track = session.exec(statement).first()
-    return {
-        "success": True,
-        "data": ball_track,
-    }
+    ball_track.ball_track = json.loads(ball_track.ball_track)
+    if is_api:
+        return {
+            "success": True,
+            "data": ball_track,
+        }
+    else:
+        return ball_track
 
 
 @app.get("/get_bounces/{task_id}")
-def get_bounces(task_id: int, session: SessionDep):
+async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
     bounces = session.exec(statement).first()
-    return {
-        "success": True,
-        "data": bounces,
-    }
+    bounces.bounces = json.loads(bounces.bounces)
+    if is_api:
+        return {
+            "success": True,
+            "data": bounces,
+        }
+    else:
+        return bounces
 
 
 @app.get("/get_direction_change_indices/{task_id}")
-def get_direction_change_indices_api(task_id: int, session: SessionDep):
+async def get_direction_change_indices_api(
+    task_id: int, session: SessionDep, is_api: bool = True
+):
     statement = select(DirectionChangeIndicesModel).where(
         DirectionChangeIndicesModel.task_id == task_id
     )
     direction_change_indices = session.exec(statement).first()
-    return {
-        "success": True,
-        "data": direction_change_indices,
-    }
+    direction_change_indices.direction_change_indices = json.loads(
+        direction_change_indices.direction_change_indices
+    )
+    if is_api:
+        return {
+            "success": True,
+            "data": direction_change_indices,
+        }
+    else:
+        return direction_change_indices
 
 
 @app.get("/all-stats/{task_id}")
-def get_all_stats(task_id: int, session: SessionDep):
-    video_paths = session.exec(
-        select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
-    ).first()
-    speed_stats = session.exec(
-        select(SpeedModel).where(SpeedModel.task_id == task_id)
-    ).first()
-    ball_track = session.exec(
-        select(BallTrackModel).where(BallTrackModel.task_id == task_id)
-    ).first()
-    bounces = session.exec(
-        select(BouncesModel).where(BouncesModel.task_id == task_id)
-    ).first()
-    direction_change_indices = session.exec(
-        select(DirectionChangeIndicesModel).where(
-            DirectionChangeIndicesModel.task_id == task_id
-        )
-    ).first()
+async def get_all_stats(task_id: int, session: SessionDep):
     return {
         "success": True,
         "data": {
-            "video_paths": video_paths,
-            "speed_stats": speed_stats,
-            "ball_track": ball_track,
-            "bounces": bounces,
-            "direction_change_indices": direction_change_indices,
+            "video_paths": await get_video_paths(task_id, session, is_api=False),
+            "speed_stats": await get_speed_stats(task_id, session, is_api=False),
+            "ball_track": await get_ball_track(task_id, session, is_api=False),
+            "bounces": await get_bounces(task_id, session, is_api=False),
+            "direction_change_indices": await get_direction_change_indices_api(
+                task_id, session, is_api=False
+            ),
         },
-        "progress": get_task_progress(task_id, session),
+        "progress": get_task_progress(task_id, session, is_api=False),
     }
 
 
