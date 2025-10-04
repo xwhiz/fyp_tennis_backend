@@ -85,6 +85,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+os.makedirs("uploads", exist_ok=True)
 os.makedirs("output", exist_ok=True)
 
 # static files
