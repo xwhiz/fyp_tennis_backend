@@ -4,7 +4,10 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y curl
 COPY requirements.txt .
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 RUN pip install -r requirements.txt
+RUN pip install opencv-python-headless
+
 
 # Copy the application code
 COPY . .
