@@ -346,8 +346,8 @@ def process_request(video_path: str, task_id: int, name: str):
                 2,
             )
 
-        if i > speed_indices[-1] and len(speed_indices) > 1:
-            speed_indices.pop()
+            if i > speed_indices[-1] and len(speed_indices) > 1:
+                speed_indices.pop()
 
         out.write(frame)
 
