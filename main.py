@@ -409,10 +409,19 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
     task = session.exec(statement).first()
 
     if not task:
-        raise HTTPException(status_code=404, detail="Process not found")
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Process not found",
+            }
+        )
 
-    if is_api:
-        return {
+    return (
+        task
+        if not is_api
+        else {
             "success": True,
             "data": {
                 "process_id": task.id,
@@ -424,8 +433,7 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
                 "updated_at": task.updated_at,
             },
         }
-    else:
-        return task
+    )
 
 
 @app.post("/process_video")
@@ -493,29 +501,51 @@ async def process_video(
 async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
     video_paths = session.exec(statement).first()
-    if is_api:
-        return {
+    if video_paths is None:
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Video paths not found",
+            }
+        )
+
+    return (
+        video_paths
+        if not is_api
+        else {
             "success": True,
             "data": video_paths,
         }
-    else:
-        return video_paths
+    )
 
 
 @app.get("/get_speed_stats/{task_id}")
 async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
     speed_stats = session.exec(statement).first()
-    if speed_stats is None:
-        speed_stats.speed = json.loads(speed_stats.speed)
 
-    if is_api:
-        return {
+    if speed_stats is None:
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Speed stats not found",
+            }
+        )
+
+    speed_stats.speed = json.loads(speed_stats.speed)
+
+    return (
+        speed_stats
+        if not is_api
+        else {
             "success": True,
             "data": speed_stats,
         }
-    else:
-        return speed_stats
+    )
 
 
 @app.get("/get_ball_track/{task_id}")
@@ -523,15 +553,25 @@ async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True)
     statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
     ball_track = session.exec(statement).first()
     if ball_track is None:
-        ball_track.ball_track = json.loads(ball_track.ball_track)
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Ball track not found",
+            }
+        )
 
-    if is_api:
-        return {
+    ball_track.ball_track = json.loads(ball_track.ball_track)
+
+    return (
+        ball_track
+        if not is_api
+        else {
             "success": True,
             "data": ball_track,
         }
-    else:
-        return ball_track
+    )
 
 
 @app.get("/get_bounces/{task_id}")
@@ -539,15 +579,25 @@ async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
     bounces = session.exec(statement).first()
     if bounces is None:
-        bounces.bounces = json.loads(bounces.bounces)
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Bounces not found",
+            }
+        )
 
-    if is_api:
-        return {
+    bounces.bounces = json.loads(bounces.bounces)
+
+    return (
+        bounces
+        if not is_api
+        else {
             "success": True,
             "data": bounces,
         }
-    else:
-        return bounces
+    )
 
 
 @app.get("/get_direction_change_indices/{task_id}")
@@ -559,33 +609,50 @@ async def get_direction_change_indices_api(
     )
     direction_change_indices = session.exec(statement).first()
     if direction_change_indices is None:
-        direction_change_indices.direction_change_indices = json.loads(
-            direction_change_indices.direction_change_indices
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Direction change indices not found",
+            }
         )
 
-    if is_api:
-        return {
+    direction_change_indices.direction_change_indices = json.loads(
+        direction_change_indices.direction_change_indices
+    )
+
+    return (
+        direction_change_indices
+        if not is_api
+        else {
             "success": True,
             "data": direction_change_indices,
         }
-    else:
-        return direction_change_indices
+    )
 
 
 @app.get("/all-stats/{task_id}")
 async def get_all_stats(task_id: int, session: SessionDep):
+    video_paths = await get_video_paths(task_id, session, is_api=False)
+    speed_stats = await get_speed_stats(task_id, session, is_api=False)
+    ball_track = await get_ball_track(task_id, session, is_api=False)
+    bounces = await get_bounces(task_id, session, is_api=False)
+    direction_change_indices = await get_direction_change_indices_api(
+        task_id, session, is_api=False
+    )
+    progress = get_task_progress(task_id, session, is_api=False)
+
     return {
         "success": True,
         "data": {
-            "video_paths": await get_video_paths(task_id, session, is_api=False),
-            "speed_stats": await get_speed_stats(task_id, session, is_api=False),
-            "ball_track": await get_ball_track(task_id, session, is_api=False),
-            "bounces": await get_bounces(task_id, session, is_api=False),
-            "direction_change_indices": await get_direction_change_indices_api(
-                task_id, session, is_api=False
-            ),
+            "video_paths": video_paths,
+            "speed_stats": speed_stats,
+            "ball_track": ball_track,
+            "bounces": bounces,
+            "direction_change_indices": direction_change_indices,
         },
-        "progress": get_task_progress(task_id, session, is_api=False),
+        "progress": progress,
     }
 
 
