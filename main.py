@@ -36,55 +36,45 @@ from core.stream_infer import (
     get_ball_track_and_bounces_stream_infer,
 )
 from core.utils import get_court_img, perspective_transform_point, scene_detect
+from db.engine import Engine
+from models.background_task_model import BackgroundTask
+from models.process_video_response import ProcessVideoResponse
+from db.utils import create_db_and_tables, update_task_status, SessionDep
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Global thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=2)
 
-
-def update_task_status(
-    task_id: int, status: str, progress: int = None, description: str = None
-):
-    """Update task status in database"""
-    with Session(engine) as session:
-        statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
-        task = session.exec(statement).first()
-        if task:
-            task.status = status
-            task.updated_at = datetime.now()
-            if description is not None:
-                task.description = description
-            if progress is not None:
-                task.progress = progress
-            session.add(task)
-            session.commit()
-
-
-def process_video_background(task_id: int, video_path: str, name: str):
-    """Background function to process video"""
-    try:
-        update_task_status(task_id, "processing", 0, "Processing video")
-
-        process_request(video_path, task_id)
-
-        update_task_status(task_id, "completed", 9, "Video processed successfully")
-
-    except Exception as e:
-        print(f"Error processing video {task_id}: {str(e)}")
-        update_task_status(task_id, "failed", 0, "Error processing video")
+engine = Engine.instance()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    create_db_and_tables()
+    create_db_and_tables(engine)
     yield
     # Shutdown
     executor.shutdown(wait=True)
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def process_video_background(task_id: int, video_path: str, name: str):
+    """Background function to process video"""
+    try:
+        update_task_status(engine, task_id, "processing", 0, "Processing video")
+
+        process_request(video_path, task_id)
+
+        update_task_status(
+            engine, task_id, "completed", 9, "Video processed successfully"
+        )
+
+    except Exception as e:
+        print(f"Error processing video {task_id}: {str(e)}")
+        update_task_status(engine, task_id, "failed", 0, "Error processing video")
 
 
 @dataclass
@@ -385,34 +375,6 @@ def process_request(video_path: str, task_id: int):
     minimap_out.release()
 
 
-class BackgroundTask(SQLModel, table=True):
-    id: int = Field(default=None, primary_key=True)
-    progress: int = Field(default=0)
-    total_steps: int = Field(default=9)
-    status: str = Field(default="pending")
-    video_path: str = Field(default="")
-    description: str = Field(default="")
-    created_at: datetime = Field(default=datetime.now())
-    updated_at: datetime = Field(default=datetime.now())
-
-
-engine = create_engine(
-    "sqlite:///./database.db", connect_args={"check_same_thread": False}
-)
-
-
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
-
-
-def get_session():
-    with Session(engine) as session:
-        yield session
-
-
-SessionDep = Annotated[Session, Depends(get_session)]
-
-
 @app.get("/process_video/{process_id}")
 def get_process_video(process_id: int, session: SessionDep):
     # Query the database for the process
@@ -427,6 +389,7 @@ def get_process_video(process_id: int, session: SessionDep):
         "data": {
             "process_id": task.id,
             "progress": task.progress,
+            "total_steps": task.total_steps,
             "status": task.status,
             "description": task.description,
             "created_at": task.created_at,
@@ -435,12 +398,10 @@ def get_process_video(process_id: int, session: SessionDep):
     }
 
 
-class ProcessVideoRequest(BaseModel):
-    name: str
-
-
 @app.post("/process_video")
-async def process_video(name: str = Form(...), video_file: UploadFile = File(...)):
+async def process_video(
+    name: str = Form(...), video_file: UploadFile = File(...)
+) -> ProcessVideoResponse:
     # Validate file type
     if not video_file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="File must be a video")
@@ -495,6 +456,22 @@ async def process_video(name: str = Form(...), video_file: UploadFile = File(...
             "name": name,
             "file_path": file_path,
         },
+    }
+
+
+@app.get("/")
+def test_hello_world():
+    return {
+        "success": True,
+        "message": "Hello world",
+    }
+
+
+@app.get("/check-health")
+def check_health():
+    return {
+        "success": True,
+        "message": "OK",
     }
 
 
