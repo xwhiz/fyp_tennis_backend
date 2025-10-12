@@ -1,12 +1,19 @@
+from math import ceil
 import time
 from collections import defaultdict
 
 import cv2
 import numpy as np
 from scipy.spatial.distance import euclidean
+from tqdm import tqdm
 
 from core.get_direction_change_indices import get_direction_change_indices
-from core.utils import get_court_img, perspective_transform_point, scene_detect
+from core.utils import (
+    compress_frame,
+    get_court_img,
+    perspective_transform_point,
+    scene_detect,
+)
 from db.utils import (
     save_ball_track_in_db,
     save_bounces_in_db,
@@ -19,19 +26,50 @@ from db.utils import (
 from models.speed_at import SpeedAt
 
 
-def process_frames(
+def get_detections_from_video(
     app,
     task_id: int,
-    frames: list,
-    fps: int,
+    video_path: str,
 ):
-    update_task_status(task_id, "processing", 2, "Detecting ball")
-    ball_track = app.ball_detector.infer_model(frames)
-    update_task_status(task_id, "processing", 3, "Detecting court")
-    homography_matrices, kps_court = app.court_detector.infer_model(frames)
-    # persons_top, persons_bottom = person_detector.track_players(
-    #     frames_in_one_second, homography_matrices, filter_players=False
-    update_task_status(task_id, "processing", 4, "Detecting bounces")
+    ball_track = []
+    homography_matrices = []
+    kps_court = []
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    batch_size = fps
+    print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
+    batch_frames = []
+    for _ in tqdm(range(total_frames)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        batch_frames.append(frame)
+
+        if len(batch_frames) == batch_size:
+            batch_ball_track = app.ball_detector.infer_model(batch_frames)
+            batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
+                batch_frames
+            )
+            ball_track.extend(batch_ball_track)
+            homography_matrices.extend(batch_homography_matrices)
+            kps_court.extend(batch_kps_court)
+            batch_frames = []
+
+    cap.release()
+    # process the last batch of frames even if it's not of length fps
+    if batch_frames:
+        batch_ball_track = app.ball_detector.infer_model(batch_frames)
+        batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
+            batch_frames
+        )
+        ball_track.extend(batch_ball_track)
+        homography_matrices.extend(batch_homography_matrices)
+        kps_court.extend(batch_kps_court)
+
+    update_task_status(task_id, "processing", 3, "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
     bounces = app.bounce_detector.predict(x_ball, y_ball)
@@ -46,40 +84,41 @@ def process_video(app, video_path: str, task_id: int, name: str):
     PIXEL_TO_METER_RATIO = 1 / 101.5
     scenes = scene_detect(video_path)
     print("[INFO]:", scenes)
-
-    # scenes type: [tuple[int, int]]
-    # get the init value of the largest difference between the two values
-
-    update_task_status(task_id, "processing", 1, "Loading video")
-
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    # move 2 seconds forward
-    cap.set(cv2.CAP_PROP_POS_FRAMES, fps * 2)
-    frames = []
-    print("[INFO]: video loaded", cap.isOpened())
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = cv2.resize(frame, (1280, 720))
-        frames.append(frame)
-
-    cap.release()
-
     max_diff = max(scenes, key=lambda x: x[1] - x[0])
     thumbnail_index = max_diff[0]
     thumbnail_path = f"output/output_{task_id}_thumbnail_{time.time()}.jpg"
-    cv2.imwrite(thumbnail_path, frames[thumbnail_index], [cv2.IMWRITE_JPEG_QUALITY, 80])
 
-    save_thumbnail_in_db(task_id, thumbnail_path)
+    update_task_status(task_id, "processing", 1, "Loading video")
 
-    ball_track, bounces, homography_matrices, kps_court = process_frames(
+    input_video_capture = cv2.VideoCapture(video_path)
+    fps = input_video_capture.get(cv2.CAP_PROP_FPS)
+    total_frames = int(input_video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"[INFO]: number of frames: {total_frames}")
+    # frames = []
+    # print("[INFO]: video loaded", cap.isOpened())
+    # while cap.isOpened():
+    #     ret, frame = cap.read()
+    #     if not ret:
+    #         break
+    #     frame = cv2.resize(frame, (1280, 720))
+    #     frames.append(frame)
+
+    # cap.release()
+
+    update_task_status(task_id, "processing", 2, "Detecting court and ball track")
+    ball_track, bounces, homography_matrices, kps_court = get_detections_from_video(
         app,
         task_id,
-        frames,
-        fps,
+        video_path,
     )
+
+    # ball_track, bounces, homography_matrices, kps_court = process_frames(
+    #     app,
+    #     task_id,
+    #     frames,
+    #     fps,
+    # )
+    update_task_status(task_id, "processing", 4, "Processing ball track")
     transformed_track = [
         perspective_transform_point(point, homography_matrices[i])
         for i, point in enumerate(ball_track)
@@ -174,7 +213,7 @@ def process_video(app, video_path: str, task_id: int, name: str):
     output_path = f"output/output_{task_id}_{time.time()}.mp4"
     minimap_path = f"output/output_{task_id}_minimap_{time.time()}.mp4"
 
-    out = cv2.VideoWriter(
+    output_video_writer = cv2.VideoWriter(
         output_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
@@ -187,8 +226,15 @@ def process_video(app, video_path: str, task_id: int, name: str):
 
     update_task_status(task_id, "processing", 7, "Creating annotated video")
 
-    for i in range(len(frames)):
-        frame = frames[i].copy()
+    for i in range(total_frames):
+        ret, frame = input_video_capture.read()
+        if not ret:
+            break
+        frame = cv2.resize(frame, (1280, 720))
+
+        if i == thumbnail_index:
+            cv2.imwrite(thumbnail_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            save_thumbnail_in_db(task_id, thumbnail_path)
 
         # Draw ball on main frame
         if ball_track[i][0] is not None:
@@ -275,9 +321,9 @@ def process_video(app, video_path: str, task_id: int, name: str):
             if i > speed_indices[-1] and len(speed_indices) > 1:
                 speed_indices.pop()
 
-        out.write(frame)
+        output_video_writer.write(frame)
 
-    out.release()
+    output_video_writer.release()
 
     minimap = get_court_img()
     h, w, _ = minimap.shape

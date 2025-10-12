@@ -17,7 +17,7 @@ class BallDetector:
         self.width = 640
         self.height = 360
 
-    def infer_model(self, frames):
+    def infer_model(self, frames, verbose=False):
         """Run pretrained model on a consecutive list of frames
         :params
             frames: list of consecutive video frames
@@ -26,7 +26,7 @@ class BallDetector:
         """
         ball_track = [(None, None)] * 2
         prev_pred = [None, None]
-        for num in tqdm(range(2, len(frames))):
+        for num in tqdm(range(2, len(frames)), disable=not verbose):
             img = cv2.resize(frames[num], (self.width, self.height))
             img_prev = cv2.resize(frames[num - 1], (self.width, self.height))
             img_preprev = cv2.resize(frames[num - 2], (self.width, self.height))

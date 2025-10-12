@@ -17,14 +17,14 @@ class CourtDetectorNet:
             self.model = self.model.to(device)
             self.model.eval()
 
-    def infer_model(self, frames):
+    def infer_model(self, frames, verbose=False):
         output_width = 640
         output_height = 360
         scale = 2
 
         kps_res = []
         matrixes_res = []
-        for num_frame, image in enumerate(tqdm(frames)):
+        for num_frame, image in enumerate(tqdm(frames, disable=not verbose)):
             img = cv2.resize(image, (output_width, output_height))
             inp = img.astype(np.float32) / 255.0
             inp = torch.tensor(np.rollaxis(inp, 2, 0))
