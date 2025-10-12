@@ -217,5 +217,6 @@ __marimo__/
 
 *.mp4
 *yolo*
+*.jpg
 
 *.db

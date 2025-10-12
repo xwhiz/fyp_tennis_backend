@@ -57,3 +57,8 @@ def get_slope(values: list[float]) -> float:
 
     p = np.polyfit(range(len(values)), values, 1)
     return p[0]
+
+
+def compress_frame(frame: np.ndarray, quality: int = 80):
+    ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return None if not ret else buffer

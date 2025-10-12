@@ -6,12 +6,13 @@ import numpy as np
 from scipy.spatial.distance import euclidean
 
 from core.get_direction_change_indices import get_direction_change_indices
-from core.utils import get_court_img, perspective_transform_point
+from core.utils import get_court_img, perspective_transform_point, scene_detect
 from db.utils import (
     save_ball_track_in_db,
     save_bounces_in_db,
     save_direction_change_indices_in_db,
     save_speed_in_db,
+    save_thumbnail_in_db,
     save_video_paths_in_db,
     update_task_status,
 )
@@ -39,11 +40,15 @@ def process_frames(
 
 
 def process_video(app, video_path: str, task_id: int, name: str):
+    print(f"[INFO]: Processing video {task_id}")
     update_task_status(task_id, "processing", 0, "Loading models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
-    # scenes = scene_detect(video_path)
-    # print("[INFO]:", scenes)
+    scenes = scene_detect(video_path)
+    print("[INFO]:", scenes)
+
+    # scenes type: [tuple[int, int]]
+    # get the init value of the largest difference between the two values
 
     update_task_status(task_id, "processing", 1, "Loading video")
 
@@ -61,6 +66,13 @@ def process_video(app, video_path: str, task_id: int, name: str):
         frames.append(frame)
 
     cap.release()
+
+    max_diff = max(scenes, key=lambda x: x[1] - x[0])
+    thumbnail_index = max_diff[0]
+    thumbnail_path = f"output/output_{task_id}_thumbnail_{time.time()}.jpg"
+    cv2.imwrite(thumbnail_path, frames[thumbnail_index], [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+    save_thumbnail_in_db(task_id, thumbnail_path)
 
     ball_track, bounces, homography_matrices, kps_court = process_frames(
         app,

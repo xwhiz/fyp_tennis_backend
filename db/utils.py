@@ -9,6 +9,7 @@ from models.ball_track_model import BallTrackModel
 from models.bounces_model import BouncesModel
 from models.direction_change_indices_model import DirectionChangeIndicesModel
 from models.speed_model import SpeedModel
+from models.thumbnail_model import ThumbnailModel
 from models.video_paths_model import VideoPathsModel
 
 
@@ -98,4 +99,10 @@ def save_video_paths_in_db(
                 minimap_path=minimap_path,
             )
         )
+        session.commit()
+
+
+def save_thumbnail_in_db(task_id: int, thumbnail_path: str):
+    with Session(Engine.instance()) as session:
+        session.add(ThumbnailModel(task_id=task_id, thumbnail_path=thumbnail_path))
         session.commit()

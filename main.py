@@ -56,6 +56,7 @@ from models.process_video_response import ProcessVideoResponse
 from db.utils import create_all, save_bounces_in_db, update_task_status, SessionDep
 from models.speed_at import SpeedAt
 from models.speed_model import SpeedModel
+from models.thumbnail_model import ThumbnailModel
 from models.video_paths_model import VideoPathsModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -107,7 +108,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 def process_video_background(task_id: int, video_path: str, name: str):
     """Background function to process video"""
     try:
-        update_task_status(task_id, "processing", 0, "Processing video")
+        update_task_status(task_id, "pending", 0, "Waiting in queue to be processed")
         app.event_loop.add_task(
             {
                 "id": task_id,
@@ -227,7 +228,9 @@ async def handle_process_video_request(
 
 
 @app.get("/get_video_paths/{task_id}", tags=["stats"])
-async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True):
+async def get_video_paths(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
     statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
     video_paths = session.exec(statement).first()
     if video_paths is None:
@@ -278,7 +281,9 @@ async def get_speed_stats(
 
 
 @app.get("/get_ball_track/{task_id}", tags=["stats"])
-async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True):
+async def get_ball_track(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
     statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
     ball_track = session.exec(statement).first()
     if ball_track is None:
@@ -304,7 +309,7 @@ async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True)
 
 
 @app.get("/get_bounces/{task_id}", tags=["stats"])
-async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
+async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True) -> object:
     statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
     bounces = session.exec(statement).first()
     if bounces is None:
@@ -334,7 +339,7 @@ async def get_direction_change_indices_api(
     task_id: int,
     session: SessionDep,
     is_api: bool = True,
-):
+) -> object:
     statement = select(DirectionChangeIndicesModel).where(
         DirectionChangeIndicesModel.task_id == task_id
     )
@@ -363,8 +368,34 @@ async def get_direction_change_indices_api(
     )
 
 
+@app.get("/thumbnail/{task_id}", tags=["stats"])
+async def get_thumbnail(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
+    statement = select(ThumbnailModel).where(ThumbnailModel.task_id == task_id)
+    thumbnail = session.exec(statement).first()
+    if thumbnail is None:
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Thumbnail not found",
+            }
+        )
+
+    return (
+        thumbnail
+        if not is_api
+        else {
+            "success": True,
+            "data": thumbnail,
+        }
+    )
+
+
 @app.get("/all-stats/{task_id}", tags=["stats"])
-async def get_all_stats(task_id: int, session: SessionDep):
+async def get_all_stats(task_id: int, session: SessionDep) -> object:
     video_paths = await get_video_paths(task_id, session, is_api=False)
     speed_stats = await get_speed_stats(task_id, session, is_api=False)
     ball_track = await get_ball_track(task_id, session, is_api=False)
@@ -372,6 +403,7 @@ async def get_all_stats(task_id: int, session: SessionDep):
     direction_change_indices = await get_direction_change_indices_api(
         task_id, session, is_api=False
     )
+    thumbnail = await get_thumbnail(task_id, session, is_api=False)
     progress = get_task_progress(task_id, session, is_api=False)
 
     return {
@@ -382,6 +414,7 @@ async def get_all_stats(task_id: int, session: SessionDep):
             "ball_track": ball_track,
             "bounces": bounces,
             "direction_change_indices": direction_change_indices,
+            "thumbnail": thumbnail,
         },
         "progress": progress,
     }

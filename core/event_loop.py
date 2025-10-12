@@ -26,7 +26,7 @@ class EventLoop:
                 BackgroundTask.id, BackgroundTask.video_path, BackgroundTask.name
             ).where(
                 (BackgroundTask.status != "completed")
-                and (BackgroundTask.status != "failed")
+                & (BackgroundTask.status != "failed")
             )
             tasks = session.exec(statement).all()
             tasks = [
@@ -54,15 +54,21 @@ class EventLoop:
                         args=(self.app, task["video_path"], task["id"], task["name"]),
                     )
                     thread.start()
-                    threads.append(thread)
-                    update_task_status(
-                        task["id"], "completed", 9, "Video processed successfully"
+                    threads.append(
+                        [
+                            thread,
+                            task["id"],
+                        ]
                     )
                 except Exception as e:
                     print(f"Error processing video {task['id']}: {str(e)}")
 
-            for thread in threads:
+            for thread, task_id in threads:
                 thread.join()
+
+                update_task_status(
+                    task_id, "completed", 0, "Video processed successfully"
+                )
 
     def stop(self):
         self.is_running = False
