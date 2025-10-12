@@ -528,7 +528,9 @@ async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True
 
 
 @app.get("/get_speed_stats/{task_id}", tags=["stats"])
-async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True):
+async def get_speed_stats(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
     statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
     speed_stats = session.exec(statement).first()
 
@@ -542,14 +544,12 @@ async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True
             }
         )
 
-    speed_stats.speed = json.loads(speed_stats.speed)
-
     return (
         speed_stats
         if not is_api
         else {
             "success": True,
-            "data": speed_stats,
+            "data": json.loads(speed_stats.speed),
         }
     )
 
