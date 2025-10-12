@@ -1,6 +1,6 @@
 # TennisProject
 
-Number of threads is to be set from the OS environment variable `NUMBER_OF_THREADS`.
+Number of threads is to be set from the OS environment variable `NUMBER_OF_THREADS`. (NOT WORKING RN)
 i.e.
 To run the project, you can use the following command:
 

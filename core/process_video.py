@@ -38,36 +38,42 @@ def get_detections_from_video(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    batch_size = fps
+    batch_size = 2
+
     print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
-    batch_frames = []
-    for _ in tqdm(range(total_frames)):
+    frames = []
+    for i in tqdm(range(total_frames)):
         ret, frame = cap.read()
         if not ret:
             break
 
-        batch_frames.append(frame)
+        frames.append(frame)
 
-        if len(batch_frames) == batch_size:
-            batch_ball_track = app.ball_detector.infer_model(batch_frames)
+        if len(frames) == batch_size:
+            batch_ball_track = app.ball_detector.infer_model(frames)
             batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-                batch_frames
+                frames
             )
+
             ball_track.extend(batch_ball_track)
             homography_matrices.extend(batch_homography_matrices)
             kps_court.extend(batch_kps_court)
-            batch_frames = []
+            frames = []
+
+    if frames:
+        batch_ball_track = app.ball_detector.infer_model(frames)
+        batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
+            frames
+        )
+        ball_track.extend(batch_ball_track[: len(frames)])
+        homography_matrices.extend(batch_homography_matrices[: len(frames)])
+        kps_court.extend(batch_kps_court[: len(frames)])
 
     cap.release()
-    # process the last batch of frames even if it's not of length fps
-    if batch_frames:
-        batch_ball_track = app.ball_detector.infer_model(batch_frames)
-        batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-            batch_frames
-        )
-        ball_track.extend(batch_ball_track)
-        homography_matrices.extend(batch_homography_matrices)
-        kps_court.extend(batch_kps_court)
+
+    print(f"[INFO]: {len(ball_track)} ball track points detected")
+    print(f"[INFO]: {len(homography_matrices)} homography matrices detected")
+    print(f"[INFO]: {len(kps_court)} kps court detected")
 
     update_task_status(task_id, "processing", 3, "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
@@ -363,3 +369,4 @@ def process_video(app, video_path: str, task_id: int, name: str):
     minimap_out.release()
 
     save_video_paths_in_db(task_id, name, output_path, minimap_path)
+    update_task_status(task_id, "completed", 9, "Video processed successfully")

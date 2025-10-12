@@ -1,5 +1,4 @@
 import os
-import threading
 import time
 
 from sqlmodel import Session, select
@@ -16,8 +15,6 @@ class EventLoop:
         self.tasks = []
         self.is_running = True
 
-        self.number_of_threads = os.getenv("NUMBER_OF_THREADS", 1)
-
         self.load_pending_tasks()
 
     def load_pending_tasks(self):
@@ -25,8 +22,10 @@ class EventLoop:
             statement = select(
                 BackgroundTask.id, BackgroundTask.video_path, BackgroundTask.name
             ).where(
-                (BackgroundTask.status != "completed")
-                & (BackgroundTask.status != "failed")
+                (
+                    BackgroundTask.status != "completed"
+                    # & (BackgroundTask.status != "failed")
+                )
             )
             tasks = session.exec(statement).all()
             tasks = [
@@ -44,31 +43,13 @@ class EventLoop:
                 time.sleep(1)
                 continue
 
-            threads = []
-            number_of_threads = min(self.number_of_threads, len(self.tasks))
-            for _ in range(number_of_threads):
-                try:
-                    task = self.tasks.pop(0)
-                    thread = threading.Thread(
-                        target=process_video,
-                        args=(self.app, task["video_path"], task["id"], task["name"]),
-                    )
-                    thread.start()
-                    threads.append(
-                        [
-                            thread,
-                            task["id"],
-                        ]
-                    )
-                except Exception as e:
-                    print(f"Error processing video {task['id']}: {str(e)}")
-
-            for thread, task_id in threads:
-                thread.join()
-
-                update_task_status(
-                    task_id, "completed", 0, "Video processed successfully"
-                )
+            task = self.tasks.pop(0)
+            try:
+                process_video(self.app, task["video_path"], task["id"], task["name"])
+            except Exception as e:
+                print(f"Error processing video {task['id']}: {str(e)}")
+                update_task_status(task["id"], "failed", 0, "Error processing video")
 
     def stop(self):
         self.is_running = False
+        self.tasks = []

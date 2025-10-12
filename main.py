@@ -86,12 +86,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    app.event_loop.stop()
     executor.shutdown(wait=True)
     app.ball_detector = None
     app.court_detector = None
     app.person_detector = None
     app.bounce_detector = None
-    app.event_loop.stop()
 
 
 openapi_tags = [
