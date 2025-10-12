@@ -83,7 +83,12 @@ async def lifespan(app: FastAPI):
     app.bounce_detector = None
 
 
-app = FastAPI(lifespan=lifespan)
+openapi_tags = [
+    {"name": "tasks", "description": "Tasks"},
+    {"name": "stats", "description": "Stats"},
+    {"name": "misc", "description": "Misc"},
+]
+app = FastAPI(lifespan=lifespan, openapi_tags=openapi_tags)
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("output", exist_ok=True)
@@ -393,7 +398,7 @@ def process_request(video_path: str, task_id: int, name: str):
     save_video_paths_in_db(task_id, name, output_path, minimap_path)
 
 
-@app.get("/all_tasks")
+@app.get("/all_tasks", tags=["tasks"])
 def get_all_tasks(session: SessionDep):
     statement = select(BackgroundTask)
     tasks = session.exec(statement).all()
@@ -403,7 +408,7 @@ def get_all_tasks(session: SessionDep):
     }
 
 
-@app.get("/task_progress/{process_id}")
+@app.get("/task_progress/{process_id}", tags=["tasks"])
 def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True):
     # Query the database for the process
     statement = select(BackgroundTask).where(BackgroundTask.id == process_id)
@@ -437,7 +442,7 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
     )
 
 
-@app.post("/process_video")
+@app.post("/process_video", tags=["tasks"])
 async def process_video(
     name: str = Form(...), video_file: UploadFile = File(...)
 ) -> ProcessVideoResponse:
@@ -498,7 +503,7 @@ async def process_video(
     }
 
 
-@app.get("/get_video_paths/{task_id}")
+@app.get("/get_video_paths/{task_id}", tags=["stats"])
 async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
     video_paths = session.exec(statement).first()
@@ -522,7 +527,7 @@ async def get_video_paths(task_id: int, session: SessionDep, is_api: bool = True
     )
 
 
-@app.get("/get_speed_stats/{task_id}")
+@app.get("/get_speed_stats/{task_id}", tags=["stats"])
 async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
     speed_stats = session.exec(statement).first()
@@ -549,7 +554,7 @@ async def get_speed_stats(task_id: int, session: SessionDep, is_api: bool = True
     )
 
 
-@app.get("/get_ball_track/{task_id}")
+@app.get("/get_ball_track/{task_id}", tags=["stats"])
 async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
     ball_track = session.exec(statement).first()
@@ -575,7 +580,7 @@ async def get_ball_track(task_id: int, session: SessionDep, is_api: bool = True)
     )
 
 
-@app.get("/get_bounces/{task_id}")
+@app.get("/get_bounces/{task_id}", tags=["stats"])
 async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
     statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
     bounces = session.exec(statement).first()
@@ -601,9 +606,11 @@ async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True):
     )
 
 
-@app.get("/get_direction_change_indices/{task_id}")
+@app.get("/get_direction_change_indices/{task_id}", tags=["stats"])
 async def get_direction_change_indices_api(
-    task_id: int, session: SessionDep, is_api: bool = True
+    task_id: int,
+    session: SessionDep,
+    is_api: bool = True,
 ):
     statement = select(DirectionChangeIndicesModel).where(
         DirectionChangeIndicesModel.task_id == task_id
@@ -633,7 +640,7 @@ async def get_direction_change_indices_api(
     )
 
 
-@app.get("/all-stats/{task_id}")
+@app.get("/all-stats/{task_id}", tags=["stats"])
 async def get_all_stats(task_id: int, session: SessionDep):
     video_paths = await get_video_paths(task_id, session, is_api=False)
     speed_stats = await get_speed_stats(task_id, session, is_api=False)
@@ -657,7 +664,7 @@ async def get_all_stats(task_id: int, session: SessionDep):
     }
 
 
-@app.get("/")
+@app.get("/", tags=["misc"])
 def test_hello_world():
     return {
         "success": True,
@@ -665,7 +672,7 @@ def test_hello_world():
     }
 
 
-@app.get("/check-health")
+@app.get("/check-health", tags=["misc"])
 def check_health():
     return {
         "success": True,
