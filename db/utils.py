@@ -63,18 +63,25 @@ def save_ball_track_in_db(task_id: int, ball_track: list):
         session.commit()
 
 
-def save_bounces_in_db(task_id: int, bounces: set):
+def save_bounces_in_db(task_id: int, bounces: dict):
+    processed_bounces = {k: to_float(v) for k, v in bounces.items()}
+
     with Session(Engine.instance()) as session:
-        session.add(BouncesModel(task_id=task_id, bounces=json.dumps(list(bounces))))
+        session.add(
+            BouncesModel(task_id=task_id, bounces=json.dumps(processed_bounces))
+        )
         session.commit()
 
 
 def save_direction_change_indices_in_db(task_id: int, direction_change_indices: list):
+    processed_direction_change_indices = {
+        k: to_float(v) for k, v in direction_change_indices.items()
+    }
     with Session(Engine.instance()) as session:
         session.add(
             DirectionChangeIndicesModel(
                 task_id=task_id,
-                direction_change_indices=json.dumps(direction_change_indices),
+                direction_change_indices=json.dumps(processed_direction_change_indices),
             )
         )
         session.commit()

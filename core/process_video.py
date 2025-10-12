@@ -86,8 +86,7 @@ def process_video(app, video_path: str, task_id: int, name: str):
     ]
 
     save_ball_track_in_db(task_id, transformed_track)
-    save_bounces_in_db(task_id, bounces)
-
+    save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces})
     update_task_status(task_id, "processing", 5, "Finding ball hits")
     direction_change_indices = list(
         get_direction_change_indices(ball_track, buffer_length=8)
@@ -116,7 +115,9 @@ def process_video(app, video_path: str, task_id: int, name: str):
         outer += 1
 
     direction_change_indices = indices
-    save_direction_change_indices_in_db(task_id, direction_change_indices)
+    save_direction_change_indices_in_db(
+        task_id, {index: ball_track[index] for index in direction_change_indices}
+    )
 
     update_task_status(task_id, "processing", 6, "Calculating speed")
 
