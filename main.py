@@ -275,7 +275,7 @@ async def get_speed_stats(
         )
 
     return (
-        speed_stats
+        json.loads(speed_stats.speed)
         if not is_api
         else {
             "success": True,
