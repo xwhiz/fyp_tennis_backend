@@ -1,6 +1,8 @@
 import asyncio
 import json
+import mimetypes
 import os
+import re
 import threading
 import time
 from collections import defaultdict
@@ -11,6 +13,7 @@ from datetime import datetime
 from typing import Annotated
 
 import cv2
+from fastapi.responses import StreamingResponse
 import numpy as np
 import torch
 from fastapi import (
@@ -441,6 +444,48 @@ def check_health():
         "success": True,
         "message": "OK",
     }
+
+
+@app.get("/stream/output/{filename}", tags=["stream"])
+async def stream_output_file(filename: str, request: Request):
+    """Stream large video files from output directory with range support"""
+    file_path = f"./output/{filename}"
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Only stream video files
+    if not filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
+        raise HTTPException(status_code=400, detail="Only video files can be streamed")
+
+    # Fallback to full file streaming
+    def iterfile(file_path: str):
+        with open(file_path, mode="rb") as file_like:
+            yield from file_like
+
+    media_type, _ = mimetypes.guess_type(file_path)
+    return StreamingResponse(iterfile(file_path), media_type=media_type)
+
+
+@app.get("/stream/uploads/{filename}", tags=["stream"])
+async def stream_uploads_file(filename: str, request: Request):
+    """Stream large video files from output directory with range support"""
+    file_path = f"./uploads/{filename}"
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Only stream video files
+    if not filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".webm")):
+        raise HTTPException(status_code=400, detail="Only video files can be streamed")
+
+    # Fallback to full file streaming
+    def iterfile(file_path: str):
+        with open(file_path, mode="rb") as file_like:
+            yield from file_like
+
+    media_type, _ = mimetypes.guess_type(file_path)
+    return StreamingResponse(iterfile(file_path), media_type=media_type)
 
 
 if __name__ == "__main__":
