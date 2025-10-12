@@ -7,6 +7,7 @@ class BackgroundTask(SQLModel, table=True):
     progress: int = Field(default=0)
     total_steps: int = Field(default=9)
     status: str = Field(default="pending")
+    name: str = Field(default="")
     video_path: str = Field(default="")
     description: str = Field(default="")
     created_at: datetime = Field(default=datetime.now())
