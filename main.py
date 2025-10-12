@@ -32,6 +32,7 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 from core.ball_detector import BallDetector
 from core.bounce_detector import BounceDetector
 from core.court_detection_net import CourtDetectorNet
+from core.court_reference import CourtReference
 from core.event_loop import EventLoop
 from core.get_direction_change_indices import get_direction_change_indices
 from core.person_detector import PersonDetector
@@ -418,6 +419,12 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
         },
         "progress": progress,
     }
+
+
+@app.get("/court_reference", tags=["misc"])
+def get_court_reference():
+    court_reference = CourtReference()
+    return {"success": True, "data": court_reference.to_dict()}
 
 
 @app.get("/", tags=["misc"])

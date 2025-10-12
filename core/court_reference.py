@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 class CourtReference:
@@ -104,8 +103,6 @@ class CourtReference:
         self.court_total_height = self.court_height + self.top_bottom_border * 2
         self.court = self.build_court_reference()
 
-        # self.court = cv2.cvtColor(cv2.imread('court_configurations/court_reference.png'), cv2.COLOR_BGR2GRAY)
-
     def build_court_reference(self):
         """
         Create court reference image using the lines positions
@@ -128,9 +125,7 @@ class CourtReference:
         cv2.line(court, *self.right_inner_line, 1, self.line_width)
         cv2.line(court, *self.middle_line, 1, self.line_width)
         court = cv2.dilate(court, np.ones((5, 5), dtype=np.uint8))
-        # court = cv2.dilate(court, np.ones((7, 7), dtype=np.uint8))
-        # plt.imsave('court_configurations/court_reference.png', court, cmap='gray')
-        # self.court = court
+        court = cv2.dilate(court, np.ones((7, 7), dtype=np.uint8))
         return court
 
     def get_important_lines(self):
@@ -182,7 +177,32 @@ class CourtReference:
             mask[:, self.right_court_line[0][0] :] = 0
         return mask
 
+    def to_dict(self):
+        return {
+            "baseline_top": self.baseline_top,
+            "baseline_bottom": self.baseline_bottom,
+            "net": self.net,
+            "left_court_line": self.left_court_line,
+            "right_court_line": self.right_court_line,
+            "left_inner_line": self.left_inner_line,
+            "right_inner_line": self.right_inner_line,
+            "middle_line": self.middle_line,
+            "top_inner_line": self.top_inner_line,
+            "bottom_inner_line": self.bottom_inner_line,
+            "top_extra_part": self.top_extra_part,
+            "bottom_extra_part": self.bottom_extra_part,
+            "court_width": self.court_width,
+            "court_height": self.court_height,
+            "vertical_margin": self.top_bottom_border,
+            "horizontal_margin": self.right_left_border,
+            "court_total_width": self.court_total_width,
+            "court_total_height": self.court_total_height,
+        }
+
 
 if __name__ == "__main__":
     c = CourtReference()
-    c.build_court_reference()
+    court = c.build_court_reference()
+    court = cv2.dilate(court, np.ones((10, 10), dtype=np.uint8))
+    court_img = (np.stack((court, court, court), axis=2) * 255).astype(np.uint8)
+    cv2.imwrite("Court Reference.jpg", court_img)
