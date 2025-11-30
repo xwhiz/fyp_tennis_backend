@@ -9,7 +9,6 @@ from tqdm import tqdm
 
 from core.get_direction_change_indices import get_direction_change_indices
 from core.utils import (
-    compress_frame,
     get_court_img,
     perspective_transform_point,
     scene_detect,
@@ -34,6 +33,8 @@ def get_detections_from_video(
     ball_track = []
     homography_matrices = []
     kps_court = []
+    player_top = []
+    player_bottom = []
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -54,10 +55,15 @@ def get_detections_from_video(
             batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
                 frames
             )
+            batch_players_top, batch_players_bottom = app.person_detector.track_players(
+                frames, batch_homography_matrices, filter_players=False
+            )
 
             ball_track.extend(batch_ball_track)
             homography_matrices.extend(batch_homography_matrices)
             kps_court.extend(batch_kps_court)
+            player_top.extend(batch_players_top)
+            player_bottom.extend(batch_players_bottom)
             frames = []
 
     if frames:
@@ -68,7 +74,8 @@ def get_detections_from_video(
         ball_track.extend(batch_ball_track[: len(frames)])
         homography_matrices.extend(batch_homography_matrices[: len(frames)])
         kps_court.extend(batch_kps_court[: len(frames)])
-
+        player_top.extend(batch_players_top[: len(frames)])
+        player_bottom.extend(batch_players_bottom[: len(frames)])
     cap.release()
 
     print(f"[INFO]: {len(ball_track)} ball track points detected")
@@ -80,7 +87,14 @@ def get_detections_from_video(
     y_ball = [x[1] for x in ball_track]
     bounces = app.bounce_detector.predict(x_ball, y_ball)
 
-    return ball_track, bounces, homography_matrices, kps_court
+    return (
+        ball_track,
+        bounces,
+        homography_matrices,
+        kps_court,
+        player_top,
+        player_bottom,
+    )
 
 
 def process_video(app, video_path: str, task_id: int, name: str):
