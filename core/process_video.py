@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import cv2
 import numpy as np
+from typing import Literal
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
 
@@ -23,23 +24,30 @@ from db.utils import (
     update_task_status,
 )
 from models.speed_at import SpeedAt
+from core.court_reference import CourtReference
+
+
+court_ref = CourtReference()
+ref_top_court = court_ref.get_court_mask(2)
+ref_bottom_court = court_ref.get_court_mask(1)
 
 
 def get_detections_from_frames(app, frames):
     batch_ball_track = app.ball_detector.infer_model(frames)
-    batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-        frames
-    )
-    batch_players_top_unfiltered, batch_players_bottom_unfiltered = app.person_detector.track_players(
-        frames, batch_homography_matrices, filter_players=False
+    batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(frames)
+    batch_players_top_unfiltered, batch_players_bottom_unfiltered = (
+        app.person_detector.track_players(
+            frames, batch_homography_matrices, filter_players=False
+        )
     )
     batch_players_top = []
     batch_players_bottom = []
     batch_matrix = batch_homography_matrices[0]
     for i in range(len(batch_players_top_unfiltered)):
         top_player, bottom_player = app.person_detector.filter_players(
-            batch_players_top_unfiltered[i], batch_players_bottom_unfiltered[i], 
-            batch_matrix
+            batch_players_top_unfiltered[i],
+            batch_players_bottom_unfiltered[i],
+            batch_matrix,
         )
         if len(top_player) > 0:
             batch_players_top.append(top_player[0])
@@ -50,7 +58,13 @@ def get_detections_from_frames(app, frames):
         else:
             batch_players_bottom.append(None)
 
-    return batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom
+    return (
+        batch_ball_track,
+        batch_homography_matrices,
+        batch_kps_court,
+        batch_players_top,
+        batch_players_bottom,
+    )
 
 
 def get_detections_from_video(
@@ -67,7 +81,8 @@ def get_detections_from_video(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    batch_size = 50
+    # TODO: fix batch size
+    batch_size = 500
 
     print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
     frames = []
@@ -79,7 +94,13 @@ def get_detections_from_video(
         frames.append(frame)
 
         if len(frames) == batch_size:
-            batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom = get_detections_from_frames(app, frames)
+            (
+                batch_ball_track,
+                batch_homography_matrices,
+                batch_kps_court,
+                batch_players_top,
+                batch_players_bottom,
+            ) = get_detections_from_frames(app, frames)
             ball_track.extend(batch_ball_track)
             homography_matrices.extend(batch_homography_matrices)
             kps_court.extend(batch_kps_court)
@@ -88,14 +109,20 @@ def get_detections_from_video(
             frames = []
 
     if frames:
-        batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom = get_detections_from_frames(app, frames)
+        (
+            batch_ball_track,
+            batch_homography_matrices,
+            batch_kps_court,
+            batch_players_top,
+            batch_players_bottom,
+        ) = get_detections_from_frames(app, frames)
 
         ball_track.extend(batch_ball_track[: len(frames)])
         homography_matrices.extend(batch_homography_matrices[: len(frames)])
         kps_court.extend(batch_kps_court[: len(frames)])
         player_top.extend(batch_players_top[: len(frames)])
         player_bottom.extend(batch_players_bottom[: len(frames)])
-    
+
     cap.release()
 
     print(f"[INFO]: {len(ball_track)} ball track points detected")
@@ -116,11 +143,14 @@ def get_detections_from_video(
         player_bottom,
     )
 
+
 def get_sources_from_source_indices(transformed_track, source_indices):
     sources = []
+    indices = []
     for index, source in source_indices:
         if source[0] is not None:
             sources.append(source)
+            indices.append(index)
             continue
 
         # take previous and next not None points, take their average and use it as source
@@ -144,8 +174,49 @@ def get_sources_from_source_indices(transformed_track, source_indices):
         if source[0] is None:
             continue
         sources.append(source)
-    
-    return sources
+        indices.append(index)
+
+    return sources, indices
+
+
+def get_shot_type(
+    sources, destination, player_top, player_bottom
+) -> Literal["forehand", "backhand", "unknown"]:
+    net_y = court_ref.net[0][1]
+
+    src_in_top_court = sum([s[1] < net_y for s in sources]) > len(sources) / 2
+    src_in_bottom_court = sum([s[1] > net_y for s in sources]) > len(sources) / 2
+
+    dst_in_top_court = destination[1] < net_y
+    dst_in_bottom_court = destination[1] > net_y
+
+    if (
+        src_in_top_court
+        and dst_in_top_court
+        or src_in_bottom_court
+        and dst_in_bottom_court
+    ):
+        return "unknown"
+
+    # ASSUME: both players are right handed
+    if src_in_top_court and dst_in_bottom_court:  # top court to bottom court
+        reference_x = np.mean([player[1][0] for player in player_top])
+        source_x = np.mean([source[0] for source in sources])
+
+        if source_x < reference_x:
+            return "forehand"
+        else:
+            return "backhand"
+    elif src_in_bottom_court and dst_in_top_court:  # bottom court to top court
+        reference_x = np.mean([player[1][0] for player in player_bottom])
+        source_x = np.mean([source[0] for source in sources])
+        if source_x < reference_x:
+            return "backhand"
+        else:
+            return "forehand"
+    else:
+        return "unknown"
+
 
 def process_video(app, video_path: str, task_id: int, name: str):
     print(f"[INFO]: Processing video {task_id}")
@@ -176,10 +247,12 @@ def process_video(app, video_path: str, task_id: int, name: str):
     # cap.release()
 
     update_task_status(task_id, "processing", 2, "Detecting court and ball track")
-    ball_track, bounces, homography_matrices, kps_court, player_top, player_bottom = get_detections_from_video(
-        app,
-        task_id,
-        video_path,
+    ball_track, bounces, homography_matrices, kps_court, player_top, player_bottom = (
+        get_detections_from_video(
+            app,
+            task_id,
+            video_path,
+        )
     )
 
     # ball_track, bounces, homography_matrices, kps_court = process_frames(
@@ -235,8 +308,16 @@ def process_video(app, video_path: str, task_id: int, name: str):
         destination = transformed_track[bounce_index]
         if destination[0] is None:
             continue
-        sources = get_sources_from_source_indices(transformed_track, source_indices)
-        shot_type = get_shot_type(sources, destination, player_top, player_bottom)
+        sources, indices = get_sources_from_source_indices(
+            transformed_track, source_indices
+        )
+
+        shot_type = get_shot_type(
+            sources,
+            destination,
+            [player_top[index] for index in indices],
+            [player_bottom[index] for index in indices],
+        )
         pixel_distance = np.mean([euclidean(source, destination) for source in sources])
         meter_distance = pixel_distance * PIXEL_TO_METER_RATIO
         time_difference = (
@@ -247,6 +328,7 @@ def process_video(app, video_path: str, task_id: int, name: str):
             time_diff=time_difference,
             timestamp=bounce_index / float(fps),
             distance=meter_distance,
+            shot_type=shot_type,
         )
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
@@ -350,7 +432,8 @@ def process_video(app, video_path: str, task_id: int, name: str):
             speed = speed_before_bounce[speed_index].speed
             time_diff = speed_before_bounce[speed_index].time_diff
             distance = speed_before_bounce[speed_index].distance
-            text = f"Speed: {speed:.2f} km/hr Time: {time_diff:.2f} s Distance: {distance:.2f} m"
+            shot_type = speed_before_bounce[speed_index].shot_type
+            text = f"Speed: {speed:.2f} km/hr Time: {time_diff:.2f} s Distance: {distance:.2f} m Shot Type: {shot_type}"
 
             frame = cv2.putText(
                 frame,
