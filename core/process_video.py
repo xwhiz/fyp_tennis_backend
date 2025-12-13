@@ -25,6 +25,34 @@ from db.utils import (
 from models.speed_at import SpeedAt
 
 
+def get_detections_from_frames(app, frames):
+    batch_ball_track = app.ball_detector.infer_model(frames)
+    batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
+        frames
+    )
+    batch_players_top_unfiltered, batch_players_bottom_unfiltered = app.person_detector.track_players(
+        frames, batch_homography_matrices, filter_players=False
+    )
+    batch_players_top = []
+    batch_players_bottom = []
+    batch_matrix = batch_homography_matrices[0]
+    for i in range(len(batch_players_top_unfiltered)):
+        top_player, bottom_player = app.person_detector.filter_players(
+            batch_players_top_unfiltered[i], batch_players_bottom_unfiltered[i], 
+            batch_matrix
+        )
+        if len(top_player) > 0:
+            batch_players_top.append(top_player[0])
+        else:
+            batch_players_top.append(None)
+        if len(bottom_player) > 0:
+            batch_players_bottom.append(bottom_player[0])
+        else:
+            batch_players_bottom.append(None)
+
+    return batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom
+
+
 def get_detections_from_video(
     app,
     task_id: int,
@@ -39,7 +67,7 @@ def get_detections_from_video(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    batch_size = fps
+    batch_size = 50
 
     print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
     frames = []
@@ -51,14 +79,7 @@ def get_detections_from_video(
         frames.append(frame)
 
         if len(frames) == batch_size:
-            batch_ball_track = app.ball_detector.infer_model(frames)
-            batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-                frames
-            )
-            batch_players_top, batch_players_bottom = app.person_detector.track_players(
-                frames, batch_homography_matrices, filter_players=False
-            )
-
+            batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom = get_detections_from_frames(app, frames)
             ball_track.extend(batch_ball_track)
             homography_matrices.extend(batch_homography_matrices)
             kps_court.extend(batch_kps_court)
@@ -67,15 +88,14 @@ def get_detections_from_video(
             frames = []
 
     if frames:
-        batch_ball_track = app.ball_detector.infer_model(frames)
-        batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-            frames
-        )
+        batch_ball_track, batch_homography_matrices, batch_kps_court, batch_players_top, batch_players_bottom = get_detections_from_frames(app, frames)
+
         ball_track.extend(batch_ball_track[: len(frames)])
         homography_matrices.extend(batch_homography_matrices[: len(frames)])
         kps_court.extend(batch_kps_court[: len(frames)])
         player_top.extend(batch_players_top[: len(frames)])
         player_bottom.extend(batch_players_bottom[: len(frames)])
+    
     cap.release()
 
     print(f"[INFO]: {len(ball_track)} ball track points detected")
@@ -126,7 +146,7 @@ def process_video(app, video_path: str, task_id: int, name: str):
     # cap.release()
 
     update_task_status(task_id, "processing", 2, "Detecting court and ball track")
-    ball_track, bounces, homography_matrices, kps_court = get_detections_from_video(
+    ball_track, bounces, homography_matrices, kps_court, player_top, player_bottom = get_detections_from_video(
         app,
         task_id,
         video_path,

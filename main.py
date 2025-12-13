@@ -64,6 +64,7 @@ from models.thumbnail_model import ThumbnailModel
 from models.video_paths_model import VideoPathsModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"[INFO]: device: {device}")
 
 # Global thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=2)
