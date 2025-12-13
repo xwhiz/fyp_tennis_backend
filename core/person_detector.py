@@ -11,7 +11,7 @@ from tqdm import tqdm
 class PersonDetector:
     def __init__(self, dtype=torch.FloatTensor):
         self.detection_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-            pretrained=True
+            weights="FasterRCNN_ResNet50_FPN_Weights.COCO_V1"
         )
         self.detection_model = self.detection_model.to(dtype)
         self.detection_model.eval()
