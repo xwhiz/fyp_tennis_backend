@@ -81,8 +81,7 @@ def get_detections_from_video(
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # TODO: fix batch size
-    batch_size = 500
+    batch_size = fps
 
     print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
     frames = []
