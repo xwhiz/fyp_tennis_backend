@@ -116,6 +116,36 @@ def get_detections_from_video(
         player_bottom,
     )
 
+def get_sources_from_source_indices(transformed_track, source_indices):
+    sources = []
+    for index, source in source_indices:
+        if source[0] is not None:
+            sources.append(source)
+            continue
+
+        # take previous and next not None points, take their average and use it as source
+        previous_index = index - 1
+        next_index = index + 1
+        while previous_index >= 0 and transformed_track[previous_index][0] is None:
+            previous_index -= 1
+        while (
+            next_index < len(transformed_track)
+            and transformed_track[next_index][0] is None
+        ):
+            next_index += 1
+
+        if previous_index < 0 or next_index >= len(transformed_track):
+            continue
+
+        source = np.mean(
+            [transformed_track[previous_index], transformed_track[next_index]],
+            axis=0,
+        )
+        if source[0] is None:
+            continue
+        sources.append(source)
+    
+    return sources
 
 def process_video(app, video_path: str, task_id: int, name: str):
     print(f"[INFO]: Processing video {task_id}")
@@ -205,34 +235,8 @@ def process_video(app, video_path: str, task_id: int, name: str):
         destination = transformed_track[bounce_index]
         if destination[0] is None:
             continue
-        sources = []
-        for index, source in source_indices:
-            if source[0] is not None:
-                sources.append(source)
-                continue
-
-            # take previous and next not None points, take their average and use it as source
-            previous_index = index - 1
-            next_index = index + 1
-            while previous_index >= 0 and transformed_track[previous_index][0] is None:
-                previous_index -= 1
-            while (
-                next_index < len(transformed_track)
-                and transformed_track[next_index][0] is None
-            ):
-                next_index += 1
-
-            if previous_index < 0 or next_index >= len(transformed_track):
-                continue
-
-            source = np.mean(
-                [transformed_track[previous_index], transformed_track[next_index]],
-                axis=0,
-            )
-            if source[0] is None:
-                continue
-            sources.append(source)
-
+        sources = get_sources_from_source_indices(transformed_track, source_indices)
+        shot_type = get_shot_type(sources, destination, player_top, player_bottom)
         pixel_distance = np.mean([euclidean(source, destination) for source in sources])
         meter_distance = pixel_distance * PIXEL_TO_METER_RATIO
         time_difference = (
