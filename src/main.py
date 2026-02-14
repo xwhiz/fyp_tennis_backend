@@ -74,10 +74,10 @@ async def lifespan(app: FastAPI):
     create_all()
 
     # Load models
-    app.ball_detector = BallDetector("./track_net_weights.pt", device)
-    app.court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
+    app.ball_detector = BallDetector("./src/track_net_weights.pt", device)
+    app.court_detector = CourtDetectorNet("./src/model_tennis_court_det.pt", device)
     app.person_detector = PersonDetector(device)
-    app.bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
+    app.bounce_detector = BounceDetector("./src/ctb_regr_bounce.cbm")
     print("All models loaded successfully")
 
     app.event_loop = EventLoop(app)

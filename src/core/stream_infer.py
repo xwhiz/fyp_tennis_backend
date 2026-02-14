@@ -10,8 +10,8 @@ from .person_detector import PersonDetector
 def get_ball_track_and_bounces_stream_infer(
     video_path: str, device: str
 ) -> tuple[list[tuple[float, float]], set[int]]:
-    ball_detector = BallDetector("./track_net_weights.pt", device)
-    bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
+    ball_detector = BallDetector("./src/track_net_weights.pt", device)
+    bounce_detector = BounceDetector("./src/ctb_regr_bounce.cbm")
 
     ball_track = []
     cap = cv2.VideoCapture(video_path)
@@ -30,7 +30,7 @@ def get_ball_track_and_bounces_stream_infer(
 
 
 def court_detector_stream_infer(video_path: str, device: str):
-    court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
+    court_detector = CourtDetectorNet("./src/model_tennis_court_det.pt", device)
 
     cap = cv2.VideoCapture(video_path)
     homography_matrices = []
