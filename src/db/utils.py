@@ -86,7 +86,7 @@ def save_direction_change_indices_in_db(task_id: int, direction_change_indices: 
 def save_speed_in_db(task_id: int, speed: dict):
     processed_speed = {k: v.to_dict() for k, v in speed.items()}
     with Session(Engine.instance()) as session:
-        session.add(Speed(task_id=task_id, speed=json.dumps(processed_speed)))
+        session.add(Speed(task_id=task_id, speeds=json.dumps(processed_speed)))
         session.commit()
 
 
