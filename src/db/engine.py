@@ -1,11 +1,8 @@
-from sqlmodel import create_engine
+from src.db.session import engine
 
 
 class Engine:
     @staticmethod
     def instance():
-        if not hasattr(Engine, "engine"):
-            Engine.engine = create_engine(
-                "sqlite:///./database.db", connect_args={"check_same_thread": False}
-            )
-        return Engine.engine
+        """Return the engine instance used by get_db() for compatibility."""
+        return engine

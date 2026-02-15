@@ -3,10 +3,10 @@ import time
 
 from sqlmodel import Session, select
 
-from core.process_video import process_video
-from db.engine import Engine
-from db.utils import update_task_status
-from models.background_task_model import BackgroundTask
+from src.core.process_video import process_video
+from src.db.engine import Engine
+from src.db.utils import update_task_status
+from src.models.background_task import BackgroundTask
 
 
 class EventLoop:

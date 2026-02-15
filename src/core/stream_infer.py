@@ -1,10 +1,10 @@
 import cv2
 import supervision as sv
 
-from .ball_detector import BallDetector
-from .bounce_detector import BounceDetector
-from .court_detection_net import CourtDetectorNet
-from .person_detector import PersonDetector
+from src.core.ball_detector import BallDetector
+from src.core.bounce_detector import BounceDetector
+from src.core.court_detection_net import CourtDetectorNet
+from src.core.person_detector import PersonDetector
 
 
 def get_ball_track_and_bounces_stream_infer(

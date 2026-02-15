@@ -7,14 +7,14 @@ import numpy as np
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
 
-from core.get_direction_change_indices import get_direction_change_indices
-from core.utils import (
+from src.core.get_direction_change_indices import get_direction_change_indices
+from src.core.utils import (
     compress_frame,
     get_court_img,
     perspective_transform_point,
     scene_detect,
 )
-from db.utils import (
+from src.db.utils import (
     save_ball_track_in_db,
     save_bounces_in_db,
     save_direction_change_indices_in_db,
@@ -23,7 +23,7 @@ from db.utils import (
     save_video_paths_in_db,
     update_task_status,
 )
-from models.speed_at import SpeedAt
+from src.schemas.speed_at import SpeedAt
 
 
 def get_detections_from_video(
