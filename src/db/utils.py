@@ -13,11 +13,6 @@ from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
 
 
-def create_all():
-    """Create all tables from the models"""
-    SQLModel.metadata.create_all(Engine.instance())
-
-
 def get_session():
     with Session(Engine.instance()) as session:
         yield session

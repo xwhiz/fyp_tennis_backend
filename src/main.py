@@ -58,7 +58,7 @@ from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
 from src.schemas.process_video_response import ProcessVideoResponse
-from src.db.utils import create_all, update_task_status, SessionDep
+from src.db.utils import update_task_status, SessionDep
 from src.schemas.speed_at import SpeedAt
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
@@ -72,7 +72,6 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_all()
 
     # Load models
     app.ball_detector = BallDetector("./src/track_net_weights.pt", device)

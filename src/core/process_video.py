@@ -369,4 +369,4 @@ def process_video(app, video_path: str, task_id: int, name: str):
     minimap_out.release()
 
     save_video_paths_in_db(task_id, name, output_path, minimap_path)
-    update_task_status(task_id, "completed", 9, "Video processed successfully")
+    update_task_status(task_id, "completed", 10, "Video processed successfully")
