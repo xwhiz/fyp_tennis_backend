@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
 
+
 import cv2
 from fastapi.responses import StreamingResponse
 import numpy as np
@@ -29,39 +30,39 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from scipy.spatial.distance import euclidean
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
-from core.ball_detector import BallDetector
-from core.bounce_detector import BounceDetector
-from core.court_detection_net import CourtDetectorNet
-from core.court_reference import CourtReference
-from core.event_loop import EventLoop
-from core.get_direction_change_indices import get_direction_change_indices
-from core.person_detector import PersonDetector
-from core.process_video import process_video
-from core.stream_infer import (
+from src.config import settings
+from src.core.ball_detector import BallDetector
+from src.core.bounce_detector import BounceDetector
+from src.core.court_detection_net import CourtDetectorNet
+from src.core.court_reference import CourtReference
+from src.core.event_loop import EventLoop
+from src.core.get_direction_change_indices import get_direction_change_indices
+from src.core.person_detector import PersonDetector
+from src.core.process_video import process_video
+from src.core.stream_infer import (
     court_detector_stream_infer,
     get_ball_track_and_bounces_stream_infer,
 )
-from core.utils import get_court_img, perspective_transform_point, scene_detect
-from db.engine import Engine
-from db.utils import (
+from src.core.utils import get_court_img, perspective_transform_point, scene_detect
+from src.db.engine import Engine
+from src.db.utils import (
     save_ball_track_in_db,
     save_direction_change_indices_in_db,
     save_speed_in_db,
     save_video_paths_in_db,
 )
-from models.background_task_model import BackgroundTask
-from models.ball_track_model import BallTrackModel
-from models.bounces_model import BouncesModel
-from models.direction_change_indices_model import DirectionChangeIndicesModel
-from models.process_video_response import ProcessVideoResponse
-from db.utils import create_all, save_bounces_in_db, update_task_status, SessionDep
-from models.speed_at import SpeedAt
-from models.speed_model import SpeedModel
-from models.thumbnail_model import ThumbnailModel
-from models.video_paths_model import VideoPathsModel
+from src.models.background_task import BackgroundTask
+from src.models.ball_track import BallTrack
+from src.models.bounces import Bounces
+from src.models.direction_change_indices import DirectionChangeIndices
+from src.schemas.process_video_response import ProcessVideoResponse
+from src.db.utils import create_all, update_task_status, SessionDep
+from src.schemas.speed_at import SpeedAt
+from src.models.speed import Speed
+from src.models.thumbnail import Thumbnail
+from src.models.video_paths import VideoPaths
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -74,10 +75,10 @@ async def lifespan(app: FastAPI):
     create_all()
 
     # Load models
-    app.ball_detector = BallDetector("./track_net_weights.pt", device)
-    app.court_detector = CourtDetectorNet("./model_tennis_court_det.pt", device)
+    app.ball_detector = BallDetector("./src/track_net_weights.pt", device)
+    app.court_detector = CourtDetectorNet("./src/model_tennis_court_det.pt", device)
     app.person_detector = PersonDetector(device)
-    app.bounce_detector = BounceDetector("./ctb_regr_bounce.cbm")
+    app.bounce_detector = BounceDetector("./src/ctb_regr_bounce.cbm")
     print("All models loaded successfully")
 
     app.event_loop = EventLoop(app)
@@ -99,7 +100,12 @@ openapi_tags = [
     {"name": "stats", "description": "Stats"},
     {"name": "misc", "description": "Misc"},
 ]
-app = FastAPI(lifespan=lifespan, openapi_tags=openapi_tags)
+app = FastAPI(
+    title=settings.app_name,
+    description="A Self Hosted Tennis Analytics Platform",
+    lifespan=lifespan,
+    openapi_tags=openapi_tags,
+)
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("output", exist_ok=True)
@@ -235,7 +241,7 @@ async def handle_process_video_request(
 async def get_video_paths(
     task_id: int, session: SessionDep, is_api: bool = True
 ) -> object:
-    statement = select(VideoPathsModel).where(VideoPathsModel.task_id == task_id)
+    statement = select(VideoPaths).where(VideoPaths.task_id == task_id)
     video_paths = session.exec(statement).first()
     if video_paths is None:
         return (
@@ -261,7 +267,7 @@ async def get_video_paths(
 async def get_speed_stats(
     task_id: int, session: SessionDep, is_api: bool = True
 ) -> object:
-    statement = select(SpeedModel).where(SpeedModel.task_id == task_id)
+    statement = select(Speed).where(Speed.task_id == task_id)
     speed_stats = session.exec(statement).first()
 
     if speed_stats is None:
@@ -288,7 +294,7 @@ async def get_speed_stats(
 async def get_ball_track(
     task_id: int, session: SessionDep, is_api: bool = True
 ) -> object:
-    statement = select(BallTrackModel).where(BallTrackModel.task_id == task_id)
+    statement = select(BallTrack).where(BallTrack.task_id == task_id)
     ball_track = session.exec(statement).first()
     if ball_track is None:
         return (
@@ -314,7 +320,7 @@ async def get_ball_track(
 
 @app.get("/get_bounces/{task_id}", tags=["stats"])
 async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True) -> object:
-    statement = select(BouncesModel).where(BouncesModel.task_id == task_id)
+    statement = select(Bounces).where(Bounces.task_id == task_id)
     bounces = session.exec(statement).first()
     if bounces is None:
         return (
@@ -344,8 +350,8 @@ async def get_direction_change_indices_api(
     session: SessionDep,
     is_api: bool = True,
 ) -> object:
-    statement = select(DirectionChangeIndicesModel).where(
-        DirectionChangeIndicesModel.task_id == task_id
+    statement = select(DirectionChangeIndices).where(
+        DirectionChangeIndices.task_id == task_id
     )
     direction_change_indices = session.exec(statement).first()
     if direction_change_indices is None:
@@ -376,7 +382,7 @@ async def get_direction_change_indices_api(
 async def get_thumbnail(
     task_id: int, session: SessionDep, is_api: bool = True
 ) -> object:
-    statement = select(ThumbnailModel).where(ThumbnailModel.task_id == task_id)
+    statement = select(Thumbnail).where(Thumbnail.task_id == task_id)
     thumbnail = session.exec(statement).first()
     if thumbnail is None:
         return (

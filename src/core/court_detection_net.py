@@ -1,11 +1,11 @@
 import cv2
 import numpy as np
 import torch
-from .tracknet import BallTrackerNet
+from src.core.tracknet import BallTrackerNet
 import torch.nn.functional as F
 from tqdm import tqdm
-from .postprocess import refine_kps
-from .homography import get_trans_matrix, refer_kps
+from src.core.postprocess import refine_kps
+from src.core.homography import get_trans_matrix, refer_kps
 
 
 class CourtDetectorNet:

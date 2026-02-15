@@ -2,7 +2,7 @@ from scenedetect.video_manager import VideoManager
 from scenedetect.scene_manager import SceneManager
 from scenedetect.stats_manager import StatsManager
 from scenedetect.detectors import ContentDetector
-from .court_reference import CourtReference
+from src.core.court_reference import CourtReference
 import cv2
 import numpy as np
 from typing import Optional

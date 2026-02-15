@@ -1,5 +1,5 @@
 from typing import Optional
-from .utils import get_slope
+from src.core.utils import get_slope
 
 
 def get_direction_change_indices(
