@@ -6,7 +6,6 @@ import re
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,14 +32,8 @@ from pydantic import BaseModel
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from src.config import settings
-from src.core.ball_detector import BallDetector
-from src.core.bounce_detector import BounceDetector
-from src.core.court_detection_net import CourtDetectorNet
 from src.core.court_reference import CourtReference
-from src.core.event_loop import EventLoop
 from src.core.get_direction_change_indices import get_direction_change_indices
-from src.core.person_detector import PersonDetector
-from src.core.process_video import process_video
 from src.core.stream_infer import (
     court_detector_stream_infer,
     get_ball_track_and_bounces_stream_infer,
@@ -63,35 +56,13 @@ from src.schemas.speed_at import SpeedAt
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Global thread pool for background tasks
-executor = ThreadPoolExecutor(max_workers=2)
+from src.celery.worker import process_video_task
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-
-    # Load models
-    app.ball_detector = BallDetector("./src/track_net_weights.pt", device)
-    app.court_detector = CourtDetectorNet("./src/model_tennis_court_det.pt", device)
-    app.person_detector = PersonDetector(device)
-    app.bounce_detector = BounceDetector("./src/ctb_regr_bounce.cbm")
-    print("All models loaded successfully")
-
-    app.event_loop = EventLoop(app)
-    executor.submit(app.event_loop.run)
-
+    # Models are now loaded in Celery worker, not in FastAPI app
     yield
-
-    # Shutdown
-    app.event_loop.stop()
-    executor.shutdown(wait=True)
-    app.ball_detector = None
-    app.court_detector = None
-    app.person_detector = None
-    app.bounce_detector = None
 
 
 openapi_tags = [
@@ -114,21 +85,6 @@ app.mount("/output", StaticFiles(directory="output"), name="output")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
-def process_video_background(task_id: int, video_path: str, name: str):
-    """Background function to process video"""
-    try:
-        update_task_status(task_id, "pending", 0, "Waiting in queue to be processed")
-        app.event_loop.add_task(
-            {
-                "id": task_id,
-                "video_path": video_path,
-                "name": name,
-            }
-        )
-
-    except Exception as e:
-        print(f"Error processing video {task_id}: {str(e)}")
-        update_task_status(task_id, "failed", 0, "Error processing video")
 
 
 @app.get("/all_tasks", tags=["tasks"])
@@ -221,8 +177,8 @@ async def handle_process_video_request(
         session.refresh(task)
         process_id = str(task.id)
 
-    # Start background processing
-    executor.submit(process_video_background, int(process_id), file_path, name)
+    # Start background processing via Celery
+    process_video_task.delay(int(process_id), file_path, name)
 
     return {
         "success": True,

@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Celery
-    celery_broker_url: str = "http://localhost:5672"
-    celery_result_backend: str = "http://localhost:6379"
+    celery_broker_url: str = "amqp://guest:guest@localhost:5672//"
+    celery_result_backend: str = "redis://localhost:6379/0"
     celery_app_name: str = "acevision-backend-tasks"
     model_config = SettingsConfigDict(
         env_file=".env",

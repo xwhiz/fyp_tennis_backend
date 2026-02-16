@@ -27,7 +27,9 @@ from src.schemas.speed_at import SpeedAt
 
 
 def get_detections_from_video(
-    app,
+    ball_detector,
+    court_detector,
+    bounce_detector,
     task_id: int,
     video_path: str,
 ):
@@ -50,8 +52,8 @@ def get_detections_from_video(
         frames.append(frame)
 
         if len(frames) == batch_size:
-            batch_ball_track = app.ball_detector.infer_model(frames)
-            batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
+            batch_ball_track = ball_detector.infer_model(frames)
+            batch_homography_matrices, batch_kps_court = court_detector.infer_model(
                 frames
             )
 
@@ -61,10 +63,8 @@ def get_detections_from_video(
             frames = []
 
     if frames:
-        batch_ball_track = app.ball_detector.infer_model(frames)
-        batch_homography_matrices, batch_kps_court = app.court_detector.infer_model(
-            frames
-        )
+        batch_ball_track = ball_detector.infer_model(frames)
+        batch_homography_matrices, batch_kps_court = court_detector.infer_model(frames)
         ball_track.extend(batch_ball_track[: len(frames)])
         homography_matrices.extend(batch_homography_matrices[: len(frames)])
         kps_court.extend(batch_kps_court[: len(frames)])
@@ -78,12 +78,20 @@ def get_detections_from_video(
     update_task_status(task_id, "processing", 3, "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
-    bounces = app.bounce_detector.predict(x_ball, y_ball)
+    bounces = bounce_detector.predict(x_ball, y_ball)
 
     return ball_track, bounces, homography_matrices, kps_court
 
 
-def process_video(app, video_path: str, task_id: int, name: str):
+def process_video(
+    ball_detector,
+    court_detector,
+    person_detector,
+    bounce_detector,
+    video_path: str,
+    task_id: int,
+    name: str,
+):
     print(f"[INFO]: Processing video {task_id}")
     update_task_status(task_id, "processing", 0, "Loading models")
 
@@ -113,7 +121,9 @@ def process_video(app, video_path: str, task_id: int, name: str):
 
     update_task_status(task_id, "processing", 2, "Detecting court and ball track")
     ball_track, bounces, homography_matrices, kps_court = get_detections_from_video(
-        app,
+        ball_detector,
+        court_detector,
+        bounce_detector,
         task_id,
         video_path,
     )
