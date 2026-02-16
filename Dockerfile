@@ -1,18 +1,20 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 WORKDIR /app
 
-# Install uv
+RUN apt-get update && apt-get install -y \
+    python3.11 python3.11-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/bin/python3.11 /usr/bin/python
+
+RUN pip install --upgrade pip
 RUN pip install uv
 
-# Copy dependency files first (for layer caching)
 COPY pyproject.toml uv.lock ./
 
 RUN uv sync --no-dev
 
-# Copy project
 COPY . .
 
 EXPOSE 7000
-
-CMD ["uv", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7000"]
