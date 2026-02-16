@@ -6,7 +6,7 @@ while ! nc -z $POSTGRES_HOST 5432; do
 done
 
 echo "Running migrations..."
-alembic upgrade head
+uv run alembic upgrade head
 
 echo "Starting FastAPI..."
-uvicorn src.main:app --host 0.0.0.0 --port 7000
+uv run uvicorn src.main:app --host 0.0.0.0 --port 7000
