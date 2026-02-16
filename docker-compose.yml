@@ -4,6 +4,8 @@ services:
   api:
     build: .
     container_name: tennis_api
+    command: uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000
+    entrypoint: /entrypoint.sh
     volumes:
       - .:/app
     ports:
@@ -20,6 +22,7 @@ services:
     runtime: nvidia
     container_name: tennis_celery_worker
     command: uv run celery -A src.celery.worker worker --loglevel=info
+    entrypoint: /entrypoint.sh
     volumes:
       - .:/app
     env_file:
@@ -32,6 +35,7 @@ services:
     build: .
     container_name: tennis_flower
     command: uv run celery --broker=amqp://guest:guest@rabbitmq:5672// flower --port=5555
+    entrypoint: /entrypoint.sh
     volumes:
       - .:/app
     ports:
