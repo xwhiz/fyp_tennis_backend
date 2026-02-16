@@ -2,8 +2,8 @@
 # wait for Postgres
 echo "Waiting for Postgres..."
 # print the full host and port
-echo "Postgres host: $POSTGRES_HOST"
-while ! nc -z $POSTGRES_HOST 5432; do
+echo "Postgres host: postgres"
+while ! nc -z postgres 5432; do
   sleep 1
 done
 
