@@ -17,6 +17,8 @@ COPY pyproject.toml uv.lock ./
 
 RUN uv sync --no-dev
 
+RUN uv run alembic upgrade head
+
 COPY . .
 
 EXPOSE 7000
