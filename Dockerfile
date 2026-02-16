@@ -17,7 +17,10 @@ COPY pyproject.toml uv.lock ./
 
 RUN uv sync --no-dev
 
-RUN uv run alembic upgrade head
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 
 COPY . .
 
