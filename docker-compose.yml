@@ -40,7 +40,7 @@ services:
     volumes:
       - .:/app
     ports:
-      - "5555:5555"
+      - "5556:5555"
     env_file:
       - .env
     depends_on:
@@ -55,7 +55,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: acevision
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
 
@@ -63,7 +63,7 @@ services:
     image: redis:7
     container_name: tennis_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - ./data/redis:/data
 
@@ -71,7 +71,7 @@ services:
     image: rabbitmq:3-management
     container_name: tennis_rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5673:5672"
+      - "15673:15672"
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq
