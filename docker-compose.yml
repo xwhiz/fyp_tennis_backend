@@ -18,11 +18,7 @@ services:
 
   celery_worker:
     build: .
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
+    runtime: nvidia
     container_name: tennis_celery_worker
     command: uv run celery -A src.celery.worker worker --loglevel=info
     volumes:
