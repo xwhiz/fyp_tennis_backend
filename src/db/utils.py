@@ -9,6 +9,7 @@ from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.speed import Speed
+from src.models.player_positions import PlayerPositions
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
 
@@ -96,6 +97,28 @@ def save_video_paths_in_db(
                 output_path=output_path,
                 minimap_path=minimap_path,
             )
+        )
+        session.commit()
+
+
+def save_player_positions_in_db(task_id: int, player_top: list, player_bottom: list):
+    positions = {}
+    for i in range(len(player_top)):
+        top_bbox = (
+            [float(x) for x in player_top[i][0]]
+            if player_top[i] is not None
+            else None
+        )
+        bottom_bbox = (
+            [float(x) for x in player_bottom[i][0]]
+            if player_bottom[i] is not None
+            else None
+        )
+        positions[i] = {"top": top_bbox, "bottom": bottom_bbox}
+
+    with Session(Engine.instance()) as session:
+        session.add(
+            PlayerPositions(task_id=task_id, positions=json.dumps(positions))
         )
         session.commit()
 

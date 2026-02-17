@@ -18,6 +18,7 @@ from src.db.utils import (
     save_ball_track_in_db,
     save_bounces_in_db,
     save_direction_change_indices_in_db,
+    save_player_positions_in_db,
     save_speed_in_db,
     save_thumbnail_in_db,
     save_video_paths_in_db,
@@ -286,6 +287,7 @@ def process_video(
 
     save_ball_track_in_db(task_id, transformed_track)
     save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces})
+    save_player_positions_in_db(task_id, player_top, player_bottom)
     update_task_status(task_id, "processing", 5, "Finding ball hits")
     direction_change_indices = list(
         get_direction_change_indices(ball_track, buffer_length=8)

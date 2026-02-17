@@ -50,6 +50,7 @@ from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
+from src.models.player_positions import PlayerPositions
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.db.utils import update_task_status, SessionDep
 from src.schemas.speed_at import SpeedAt
@@ -57,6 +58,7 @@ from src.schemas.video_paths import VideoPathsSchema
 from src.schemas.ball_track import BallTrackSchema
 from src.schemas.bounces import BouncesSchema
 from src.schemas.direction_change_indices import DirectionChangeIndicesSchema
+from src.schemas.player_positions import PlayerPositionsSchema
 from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
@@ -341,6 +343,35 @@ async def get_direction_change_indices_api(
     )
 
 
+@app.get("/get_player_positions/{task_id}", tags=["stats"])
+async def get_player_positions(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
+    statement = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
+    player_positions = session.exec(statement).first()
+    if player_positions is None:
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Player positions not found",
+            }
+        )
+
+    player_positions.positions = json.loads(player_positions.positions)
+
+    player_positions_dict = PlayerPositionsSchema.model_validate(player_positions).model_dump()
+    return (
+        player_positions_dict
+        if not is_api
+        else {
+            "success": True,
+            "data": player_positions_dict,
+        }
+    )
+
+
 @app.get("/thumbnail/{task_id}", tags=["stats"])
 async def get_thumbnail(
     task_id: int, session: SessionDep, is_api: bool = True
@@ -377,6 +408,7 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
     direction_change_indices = await get_direction_change_indices_api(
         task_id, session, is_api=False
     )
+    player_positions = await get_player_positions(task_id, session, is_api=False)
     thumbnail = await get_thumbnail(task_id, session, is_api=False)
     progress = get_task_progress(task_id, session, is_api=False)
 
@@ -388,6 +420,7 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
             "ball_track": ball_track,
             "bounces": bounces,
             "direction_change_indices": direction_change_indices,
+            "player_positions": player_positions,
             "thumbnail": thumbnail,
         },
         "progress": progress,
