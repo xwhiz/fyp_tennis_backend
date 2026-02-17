@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     """Application settings."""
 
     # Database
-    database_url: str
+    database_url: str = "postgresql://postgres:postgres@postgres:5432/acevision"
 
     # Application
     app_name: str = "AceVision Backend"
