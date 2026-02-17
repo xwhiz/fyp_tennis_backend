@@ -219,3 +219,10 @@ __marimo__/
 *yolo*
 
 *.db
+
+.venv
+__pycache__
+data
+*.mp4
+*.pt
+.git

@@ -39,3 +39,8 @@ Prepare a video file with resolution 1280x720
 1. Clone the repository `https://github.com/yastrebksv/TennisProject.git`
 2. Run `pip install -r requirements.txt` to install packages required
 3. Run `python main.py <args>`
+
+install radis and rabbitMQ for Celery
+
+for celery dashboard
+celery --broker=http://.
