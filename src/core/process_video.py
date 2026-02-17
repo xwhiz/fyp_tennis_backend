@@ -8,8 +8,8 @@ from typing import Literal
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
 
-from core.get_direction_change_indices import get_direction_change_indices
-from core.utils import (
+from src.core.get_direction_change_indices import get_direction_change_indices
+from src.core.utils import (
     get_court_img,
     perspective_transform_point,
     scene_detect,
@@ -25,7 +25,7 @@ from src.db.utils import (
     update_task_status,
 )
 from src.schemas.speed_at import SpeedAt
-from core.court_reference import CourtReference
+from src.core.court_reference import CourtReference
 
 
 court_ref = CourtReference()
