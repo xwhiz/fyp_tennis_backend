@@ -189,6 +189,10 @@ def get_sources_from_source_indices(transformed_track, source_indices):
 def get_shot_type(
     sources, destination, player_top, player_bottom
 ) -> Literal["forehand", "backhand", "unknown"]:
+    # Filter out None values from player lists
+    player_top_filtered = [player for player in player_top if player is not None]
+    player_bottom_filtered = [player for player in player_bottom if player is not None]
+
     net_y = court_ref.net[0][1]
 
     src_in_top_court = sum([s[1] < net_y for s in sources]) > len(sources) / 2
@@ -207,7 +211,10 @@ def get_shot_type(
 
     # ASSUME: both players are right handed
     if src_in_top_court and dst_in_bottom_court:  # top court to bottom court
-        reference_x = np.mean([player[1][0] for player in player_top])
+        # Return "unknown" if no valid top players available
+        if len(player_top_filtered) == 0:
+            return "unknown"
+        reference_x = np.mean([player[1][0] for player in player_top_filtered])
         source_x = np.mean([source[0] for source in sources])
 
         if source_x < reference_x:
@@ -215,7 +222,10 @@ def get_shot_type(
         else:
             return "backhand"
     elif src_in_bottom_court and dst_in_top_court:  # bottom court to top court
-        reference_x = np.mean([player[1][0] for player in player_bottom])
+        # Return "unknown" if no valid bottom players available
+        if len(player_bottom_filtered) == 0:
+            return "unknown"
+        reference_x = np.mean([player[1][0] for player in player_bottom_filtered])
         source_x = np.mean([source[0] for source in sources])
         if source_x < reference_x:
             return "backhand"
