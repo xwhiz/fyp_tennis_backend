@@ -53,6 +53,11 @@ from src.models.direction_change_indices import DirectionChangeIndices
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.db.utils import update_task_status, SessionDep
 from src.schemas.speed_at import SpeedAt
+from src.schemas.video_paths import VideoPathsSchema
+from src.schemas.ball_track import BallTrackSchema
+from src.schemas.bounces import BouncesSchema
+from src.schemas.direction_change_indices import DirectionChangeIndicesSchema
+from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
@@ -113,20 +118,21 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
             }
         )
 
+    task_dict = {
+        "process_id": task.id,
+        "progress": task.progress,
+        "total_steps": task.total_steps,
+        "status": task.status,
+        "description": task.description,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
     return (
-        task
+        task_dict
         if not is_api
         else {
             "success": True,
-            "data": {
-                "process_id": task.id,
-                "progress": task.progress,
-                "total_steps": task.total_steps,
-                "status": task.status,
-                "description": task.description,
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-            },
+            "data": task_dict,
         }
     )
 
@@ -208,12 +214,13 @@ async def get_video_paths(
             }
         )
 
+    video_paths_dict = VideoPathsSchema.model_validate(video_paths).model_dump()
     return (
-        video_paths
+        video_paths_dict
         if not is_api
         else {
             "success": True,
-            "data": video_paths,
+            "data": video_paths_dict,
         }
     )
 
@@ -236,11 +243,11 @@ async def get_speed_stats(
         )
 
     return (
-        json.loads(speed_stats.speed)
+        json.loads(speed_stats.speeds)
         if not is_api
         else {
             "success": True,
-            "data": json.loads(speed_stats.speed),
+            "data": json.loads(speed_stats.speeds),
         }
     )
 
@@ -263,12 +270,13 @@ async def get_ball_track(
 
     ball_track.ball_track = json.loads(ball_track.ball_track)
 
+    ball_track_dict = BallTrackSchema.model_validate(ball_track).model_dump()
     return (
-        ball_track
+        ball_track_dict
         if not is_api
         else {
             "success": True,
-            "data": ball_track,
+            "data": ball_track_dict,
         }
     )
 
@@ -289,12 +297,13 @@ async def get_bounces(task_id: int, session: SessionDep, is_api: bool = True) ->
 
     bounces.bounces = json.loads(bounces.bounces)
 
+    bounces_dict = BouncesSchema.model_validate(bounces).model_dump()
     return (
-        bounces
+        bounces_dict
         if not is_api
         else {
             "success": True,
-            "data": bounces,
+            "data": bounces_dict,
         }
     )
 
@@ -323,12 +332,13 @@ async def get_direction_change_indices_api(
         direction_change_indices.direction_change_indices
     )
 
+    direction_change_indices_dict = DirectionChangeIndicesSchema.model_validate(direction_change_indices).model_dump()
     return (
-        direction_change_indices
+        direction_change_indices_dict
         if not is_api
         else {
             "success": True,
-            "data": direction_change_indices,
+            "data": direction_change_indices_dict,
         }
     )
 
@@ -349,12 +359,13 @@ async def get_thumbnail(
             }
         )
 
+    thumbnail_dict = ThumbnailSchema.model_validate(thumbnail).model_dump()
     return (
-        thumbnail
+        thumbnail_dict
         if not is_api
         else {
             "success": True,
-            "data": thumbnail,
+            "data": thumbnail_dict,
         }
     )
 
