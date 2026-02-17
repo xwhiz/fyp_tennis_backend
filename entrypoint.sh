@@ -8,4 +8,5 @@ while ! nc -z postgres 5432; do
 done
 
 echo "Postgres is up - executing command"
+echo "Command: $@"
 exec "$@"
