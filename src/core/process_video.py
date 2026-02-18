@@ -1,9 +1,11 @@
 from math import ceil
 import time
+import gc
 from collections import defaultdict
 
 import cv2
 import numpy as np
+import torch
 from typing import Literal
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
@@ -26,6 +28,7 @@ from src.db.utils import (
 )
 from src.schemas.speed_at import SpeedAt
 from src.core.court_reference import CourtReference
+from src.config import settings
 
 
 court_ref = CourtReference()
@@ -33,23 +36,68 @@ ref_top_court = court_ref.get_court_mask(2)
 ref_bottom_court = court_ref.get_court_mask(1)
 
 
-def get_detections_from_frames(ball_detector, court_detector, person_detector, frames):
+def cleanup_memory(device):
+    """Explicitly clean up GPU and CPU memory"""
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+
+
+def get_detections_from_frames(ball_detector, court_detector, person_detector, frames, task_id=None, current_frame=0, total_frames=1):
+    # Calculate progress range for this batch (0.2 to 0.8)
+    batch_start_progress = 0.2 + (current_frame / total_frames) * 0.6
+    batch_end_progress = 0.2 + ((current_frame + len(frames)) / total_frames) * 0.6
+    
+    # Step 1: Ball detection (takes ~40% of batch time)
     batch_ball_track = ball_detector.infer_model(frames)
+    if task_id:
+        progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.4, 3)
+        update_task_status(task_id, "processing", progress, "Detecting ball track")
+    
+    # Step 2: Court detection (takes ~30% of batch time)
     batch_homography_matrices, batch_kps_court = court_detector.infer_model(frames)
+    if task_id:
+        progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.7, 3)
+        update_task_status(task_id, "processing", progress, "Detecting court")
+    
+    # Step 3: Person detection (takes ~20% of batch time)
     batch_players_top_unfiltered, batch_players_bottom_unfiltered = (
         person_detector.track_players(
             frames, batch_homography_matrices, filter_players=False
         )
     )
+    if task_id:
+        progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.9, 3)
+        update_task_status(task_id, "processing", progress, "Detecting players")
     batch_players_top = []
     batch_players_bottom = []
-    batch_matrix = batch_homography_matrices[0]
     for i in range(len(batch_players_top_unfiltered)):
-        top_player, bottom_player = person_detector.filter_players(
-            batch_players_top_unfiltered[i],
-            batch_players_bottom_unfiltered[i],
-            batch_matrix,
-        )
+        # Use the matrix for this specific frame, not always the first one
+        batch_matrix = batch_homography_matrices[i]
+        
+        # Validate matrix before using it
+        if batch_matrix is not None and isinstance(batch_matrix, np.ndarray):
+            # Check if matrix has correct shape (3x3 for homography)
+            if batch_matrix.shape == (3, 3):
+                try:
+                    top_player, bottom_player = person_detector.filter_players(
+                        batch_players_top_unfiltered[i],
+                        batch_players_bottom_unfiltered[i],
+                        batch_matrix,
+                    )
+                except cv2.error:
+                    # If perspectiveTransform fails, use unfiltered results
+                    top_player = batch_players_top_unfiltered[i]
+                    bottom_player = batch_players_bottom_unfiltered[i]
+            else:
+                # Invalid matrix shape, use unfiltered results
+                top_player = batch_players_top_unfiltered[i]
+                bottom_player = batch_players_bottom_unfiltered[i]
+        else:
+            # Matrix is None or invalid, use unfiltered results
+            top_player = batch_players_top_unfiltered[i]
+            bottom_player = batch_players_bottom_unfiltered[i]
+        
         if len(top_player) > 0:
             batch_players_top.append(top_player[0])
         else:
@@ -58,6 +106,14 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
             batch_players_bottom.append(bottom_player[0])
         else:
             batch_players_bottom.append(None)
+    
+    # Clean up intermediate results
+    del batch_players_top_unfiltered, batch_players_bottom_unfiltered
+    
+    # Step 4: Filtering complete (100% of batch)
+    if task_id:
+        progress = round(batch_end_progress, 3)
+        update_task_status(task_id, "processing", progress, "Processing detections")
 
     return (
         batch_ball_track,
@@ -75,20 +131,38 @@ def get_detections_from_video(
     bounce_detector,
     task_id: int,
     video_path: str,
+    cap=None,
 ):
     ball_track = []
     homography_matrices = []
     kps_court = []
     player_top = []
     player_bottom = []
-    cap = cv2.VideoCapture(video_path)
+    
+    # Reuse provided video capture or create new one
+    should_release_cap = False
+    if cap is None:
+        cap = cv2.VideoCapture(video_path)
+        should_release_cap = True
+    
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    batch_size = fps
+    # Adaptive batch sizing for large videos
+    min_batch_size = settings.video_batch_size
+    batch_size = max(fps, min_batch_size)
+    if total_frames > 50000:
+        batch_size = max(int(fps // 2), min_batch_size)  # Ensure minimum batch size even for large videos
+        print(f"[INFO]: Large video detected ({total_frames} frames), using batch size: {batch_size}")
 
     print(f"[INFO]: number of batches: {ceil(total_frames / batch_size)}")
+    
+    # Get device from ball_detector for memory cleanup
+    device = getattr(ball_detector, 'device', 'cpu')
+    
     frames = []
+    batch_count = 0
+    
     for i in tqdm(range(total_frames)):
         ret, frame = cap.read()
         if not ret:
@@ -104,13 +178,25 @@ def get_detections_from_video(
                 batch_players_top,
                 batch_players_bottom,
             ) = get_detections_from_frames(
-                ball_detector, court_detector, person_detector, frames
+                ball_detector, court_detector, person_detector, frames,
+                task_id=task_id, current_frame=i - batch_size + 1, total_frames=total_frames
             )
             ball_track.extend(batch_ball_track)
             homography_matrices.extend(batch_homography_matrices)
             kps_court.extend(batch_kps_court)
             player_top.extend(batch_players_top)
             player_bottom.extend(batch_players_bottom)
+            
+            # Clean up batch data
+            del frames
+            del batch_ball_track, batch_homography_matrices, batch_kps_court
+            del batch_players_top, batch_players_bottom
+            
+            # Memory cleanup every batch for large videos, every 5 batches for smaller ones
+            batch_count += 1
+            if total_frames > 50000 or batch_count % 5 == 0:
+                cleanup_memory(device)
+            
             frames = []
 
     if frames:
@@ -121,7 +207,8 @@ def get_detections_from_video(
             batch_players_top,
             batch_players_bottom,
         ) = get_detections_from_frames(
-            ball_detector, court_detector, person_detector, frames
+            ball_detector, court_detector, person_detector, frames,
+            task_id=task_id, current_frame=total_frames - len(frames), total_frames=total_frames
         )
 
         ball_track.extend(batch_ball_track[: len(frames)])
@@ -129,17 +216,30 @@ def get_detections_from_video(
         kps_court.extend(batch_kps_court[: len(frames)])
         player_top.extend(batch_players_top[: len(frames)])
         player_bottom.extend(batch_players_bottom[: len(frames)])
+        
+        # Clean up remaining batch data
+        del frames
+        del batch_ball_track, batch_homography_matrices, batch_kps_court
+        del batch_players_top, batch_players_bottom
+        cleanup_memory(device)
 
-    cap.release()
+    # Only release if we created the capture object
+    if should_release_cap:
+        cap.release()
 
     print(f"[INFO]: {len(ball_track)} ball track points detected")
     print(f"[INFO]: {len(homography_matrices)} homography matrices detected")
     print(f"[INFO]: {len(kps_court)} kps court detected")
 
-    update_task_status(task_id, "processing", 3, "Detecting bounces")
+    # Update progress to 0.8 after frame detection is complete
+    update_task_status(task_id, "processing", round(0.8, 3), "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
     bounces = bounce_detector.predict(x_ball, y_ball)
+    
+    # Clean up temporary lists used for bounce detection
+    del x_ball, y_ball
+    cleanup_memory(device)
 
     return (
         ball_track,
@@ -245,7 +345,7 @@ def process_video(
     name: str,
 ):
     print(f"[INFO]: Processing video {task_id}")
-    update_task_status(task_id, "processing", 0, "Loading models")
+    update_task_status(task_id, "processing", round(0.0, 3), "Loading models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
     scenes = scene_detect(video_path)
@@ -254,24 +354,18 @@ def process_video(
     thumbnail_index = max_diff[0]
     thumbnail_path = f"output/output_{task_id}_thumbnail_{time.time()}.jpg"
 
-    update_task_status(task_id, "processing", 1, "Loading video")
+    update_task_status(task_id, "processing", round(0.1, 3), "Loading video")
 
     input_video_capture = cv2.VideoCapture(video_path)
     fps = input_video_capture.get(cv2.CAP_PROP_FPS)
     total_frames = int(input_video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[INFO]: number of frames: {total_frames}")
-    # frames = []
-    # print("[INFO]: video loaded", cap.isOpened())
-    # while cap.isOpened():
-    #     ret, frame = cap.read()
-    #     if not ret:
-    #         break
-    #     frame = cv2.resize(frame, (1280, 720))
-    #     frames.append(frame)
+    
+    # Get device for memory cleanup
+    device = getattr(ball_detector, 'device', 'cpu')
 
-    # cap.release()
-
-    update_task_status(task_id, "processing", 2, "Detecting court and ball track")
+    update_task_status(task_id, "processing", round(0.2, 3), "Detecting court and ball track")
+    # Reuse video capture object to avoid reopening
     ball_track, bounces, homography_matrices, kps_court, player_top, player_bottom = (
         get_detections_from_video(
             ball_detector,
@@ -280,8 +374,12 @@ def process_video(
             bounce_detector,
             task_id,
             video_path,
+            cap=input_video_capture,  # Reuse the capture object
         )
     )
+    
+    # Memory cleanup after detection
+    cleanup_memory(device)
 
     # ball_track, bounces, homography_matrices, kps_court = process_frames(
     #     app,
@@ -289,16 +387,22 @@ def process_video(
     #     frames,
     #     fps,
     # )
-    update_task_status(task_id, "processing", 4, "Processing ball track")
+    update_task_status(task_id, "processing", round(0.85, 3), "Processing ball track")
     transformed_track = [
         perspective_transform_point(point, homography_matrices[i])
         for i, point in enumerate(ball_track)
     ]
+    
+    # Memory cleanup after transformation
+    cleanup_memory(device)
 
     save_ball_track_in_db(task_id, transformed_track)
     save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces})
     save_player_positions_in_db(task_id, player_top, player_bottom)
-    update_task_status(task_id, "processing", 5, "Finding ball hits")
+    
+    # Clean up after saving to DB
+    cleanup_memory(device)
+    update_task_status(task_id, "processing", round(0.87, 3), "Finding ball hits")
     direction_change_indices = list(
         get_direction_change_indices(ball_track, buffer_length=8)
     )
@@ -329,8 +433,12 @@ def process_video(
     save_direction_change_indices_in_db(
         task_id, {index: ball_track[index] for index in direction_change_indices}
     )
+    
+    # Memory cleanup after direction change detection
+    cleanup_memory(device)
 
-    update_task_status(task_id, "processing", 6, "Calculating speed")
+    # Update progress to 0.9 after finding ball hits is complete
+    update_task_status(task_id, "processing", round(0.9, 3), "Calculating speed")
 
     speed_before_bounce = dict()
     for bounce_index, source_indices in change_before_bounce.items():
@@ -362,6 +470,9 @@ def process_video(
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
     save_speed_in_db(task_id, speed_before_bounce)
+    
+    # Memory cleanup after speed calculations
+    cleanup_memory(device)
 
     minimap = get_court_img()
 
@@ -379,13 +490,20 @@ def process_video(
     width_minimap = 166
     height_minimap = 350
 
-    update_task_status(task_id, "processing", 7, "Creating annotated video")
+    update_task_status(task_id, "processing", round(0.95, 3), "Creating annotated video")
+    
+    # Reset video capture to beginning for output generation
+    input_video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for i in range(total_frames):
         ret, frame = input_video_capture.read()
         if not ret:
             break
         frame = cv2.resize(frame, (1280, 720))
+        
+        # Periodic memory cleanup during video generation
+        if i > 0 and i % 1000 == 0:
+            cleanup_memory(device)
 
         if i == thumbnail_index:
             cv2.imwrite(thumbnail_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -480,6 +598,9 @@ def process_video(
         output_video_writer.write(frame)
 
     output_video_writer.release()
+    
+    # Memory cleanup after main video generation
+    cleanup_memory(device)
 
     minimap = get_court_img()
     h, w, _ = minimap.shape
@@ -489,7 +610,7 @@ def process_video(
         fps,
         (w, h),
     )
-    update_task_status(task_id, "processing", 8, "Creating minimap video")
+    update_task_status(task_id, "processing", round(0.98, 3), "Creating minimap video")
     for i in range(len(transformed_track) - 1):
         minimap_copy = minimap.copy()
         if (
@@ -516,7 +637,18 @@ def process_video(
             minimap_out.write(minimap_copy)
 
         minimap = minimap_copy.copy()
+        
+        # Periodic memory cleanup during minimap generation
+        if i > 0 and i % 1000 == 0:
+            cleanup_memory(device)
+    
     minimap_out.release()
+    
+    # Final memory cleanup
+    cleanup_memory(device)
+    
+    # Release video capture
+    input_video_capture.release()
 
     save_video_paths_in_db(task_id, name, output_path, minimap_path)
-    update_task_status(task_id, "completed", 10, "Video processed successfully")
+    update_task_status(task_id, "completed", round(1.0, 3), "Video processed successfully")

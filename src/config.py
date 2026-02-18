@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     celery_broker_url: str = "amqp://guest:guest@localhost:5672//"
     celery_result_backend: str = "redis://localhost:6379/0"
     celery_app_name: str = "acevision-backend-tasks"
+    celery_worker_concurrency: int = 2
+    
+    # Flower
+    flower_unauthenticated_api: bool = True
+    
+    # Video Processing
+    video_batch_size: int = 500
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

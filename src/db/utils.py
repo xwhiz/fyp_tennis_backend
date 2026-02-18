@@ -25,7 +25,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 def update_task_status(
     task_id: int,
     status: str,
-    progress: int = None,
+    progress: float = None,
     description: str = None,
 ):
     """Update task status in database"""

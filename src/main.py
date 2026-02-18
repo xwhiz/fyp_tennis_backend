@@ -63,12 +63,46 @@ from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
-from src.celery.worker import process_video_task
+from src.celery.worker import process_video_task, get_celery
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Models are now loaded in Celery worker, not in FastAPI app
+    
+    # Re-queue unprocessed tasks on startup
+    try:
+        with Session(Engine.instance()) as session:
+            # Query for tasks that need to be re-queued
+            statement = select(BackgroundTask).where(
+                BackgroundTask.status.in_(["pending", "processing", "failed"])
+            )
+            unprocessed_tasks = session.exec(statement).all()
+            
+            requeued_count = 0
+            for task in unprocessed_tasks:
+                # Re-queue the task
+                try:
+                    process_video_task.delay(int(task.id), task.video_path, task.name)
+                    
+                    # Reset status to pending for tasks that were processing or failed
+                    if task.status in ["processing", "failed"]:
+                        task.status = "pending"
+                        task.description = "Re-queued after API restart"
+                        session.add(task)
+                    
+                    requeued_count += 1
+                except Exception as e:
+                    print(f"[STARTUP ERROR]: Failed to re-queue task {task.id}: {str(e)}")
+            
+            if requeued_count > 0:
+                session.commit()
+                print(f"[STARTUP]: Re-queued {requeued_count} unprocessed task(s)")
+            else:
+                print("[STARTUP]: No unprocessed tasks to re-queue")
+    except Exception as e:
+        print(f"[STARTUP ERROR]: Failed to re-queue tasks: {str(e)}")
+    
     yield
 
 
@@ -96,6 +130,8 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 def get_all_tasks(session: SessionDep):
     statement = select(BackgroundTask)
     tasks = session.exec(statement).all()
+    for task in tasks:
+        print(task.progress)
     return {
         "success": True,
         "data": tasks,
@@ -121,7 +157,6 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
     task_dict = {
         "process_id": task.id,
         "progress": task.progress,
-        "total_steps": task.total_steps,
         "status": task.status,
         "description": task.description,
         "created_at": task.created_at,
@@ -170,7 +205,7 @@ async def handle_process_video_request(
     # Store the process in database
     with Session(Engine.instance()) as session:
         task = BackgroundTask(
-            progress=0,
+            progress=0.0,
             name=name,
             status="pending",
             video_path=file_path,
@@ -196,6 +231,152 @@ async def handle_process_video_request(
             "file_path": file_path,
         },
     }
+
+
+@app.delete("/delete_task/{task_id}", tags=["tasks"])
+def delete_task(task_id: int, session: SessionDep):
+    """Delete a task and all its associated data and files."""
+    # Query the task first
+    statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+    task = session.exec(statement).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+    
+    files_deleted = []
+    records_deleted = 0
+    
+    try:
+        # 1. Attempt to revoke Celery task if it's pending or processing
+        if task.status in ["pending", "processing"]:
+            try:
+                celery_app = get_celery()
+                inspect = celery_app.control.inspect()
+                
+                # Get active and reserved tasks
+                active_tasks = inspect.active() or {}
+                reserved_tasks = inspect.reserved() or {}
+                
+                # Find and revoke tasks matching this task_id
+                for worker_name, tasks in {**active_tasks, **reserved_tasks}.items():
+                    for celery_task in tasks:
+                        # Check if this is our process_video_task with matching task_id
+                        if celery_task.get("name") == "process_video_task":
+                            args = celery_task.get("args", [])
+                            # args should be [task_id, video_path, name]
+                            if args and len(args) > 0 and args[0] == task_id:
+                                celery_task_id = celery_task.get("id")
+                                if celery_task_id:
+                                    celery_app.control.revoke(celery_task_id, terminate=True)
+                                    print(f"[DELETE TASK]: Revoked Celery task {celery_task_id} for task_id {task_id}")
+            except Exception as e:
+                print(f"[DELETE TASK WARNING]: Failed to revoke Celery task: {str(e)}")
+                # Continue with deletion even if revocation fails
+        
+        # 2. Collect file paths before deleting records
+        file_paths_to_delete = []
+        
+        # Input video from BackgroundTask
+        if task.video_path:
+            file_paths_to_delete.append(task.video_path)
+        
+        # Get VideoPaths if exists
+        video_paths_stmt = select(VideoPaths).where(VideoPaths.task_id == task_id)
+        video_paths = session.exec(video_paths_stmt).first()
+        if video_paths:
+            if video_paths.output_path:
+                file_paths_to_delete.append(video_paths.output_path)
+            if video_paths.minimap_path:
+                file_paths_to_delete.append(video_paths.minimap_path)
+        
+        # Get Thumbnail if exists
+        thumbnail_stmt = select(Thumbnail).where(Thumbnail.task_id == task_id)
+        thumbnail = session.exec(thumbnail_stmt).first()
+        if thumbnail and thumbnail.thumbnail_path:
+            file_paths_to_delete.append(thumbnail.thumbnail_path)
+        
+        # 3. Delete database records
+        # Delete in order: related records first, then main task
+        
+        # Delete VideoPaths
+        if video_paths:
+            session.delete(video_paths)
+            records_deleted += 1
+        
+        # Delete Thumbnail
+        if thumbnail:
+            session.delete(thumbnail)
+            records_deleted += 1
+        
+        # Delete BallTrack
+        ball_track_stmt = select(BallTrack).where(BallTrack.task_id == task_id)
+        ball_track = session.exec(ball_track_stmt).first()
+        if ball_track:
+            session.delete(ball_track)
+            records_deleted += 1
+        
+        # Delete Bounces
+        bounces_stmt = select(Bounces).where(Bounces.task_id == task_id)
+        bounces = session.exec(bounces_stmt).first()
+        if bounces:
+            session.delete(bounces)
+            records_deleted += 1
+        
+        # Delete DirectionChangeIndices
+        direction_change_stmt = select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)
+        direction_change = session.exec(direction_change_stmt).first()
+        if direction_change:
+            session.delete(direction_change)
+            records_deleted += 1
+        
+        # Delete Speed
+        speed_stmt = select(Speed).where(Speed.task_id == task_id)
+        speed = session.exec(speed_stmt).first()
+        if speed:
+            session.delete(speed)
+            records_deleted += 1
+        
+        # Delete PlayerPositions
+        player_positions_stmt = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
+        player_positions = session.exec(player_positions_stmt).first()
+        if player_positions:
+            session.delete(player_positions)
+            records_deleted += 1
+        
+        # Delete main BackgroundTask
+        session.delete(task)
+        records_deleted += 1
+        
+        # Commit all database deletions
+        session.commit()
+        
+        # 4. Delete files
+        for file_path in file_paths_to_delete:
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    files_deleted.append(file_path)
+                    print(f"[DELETE TASK]: Deleted file {file_path}")
+            except Exception as e:
+                print(f"[DELETE TASK WARNING]: Failed to delete file {file_path}: {str(e)}")
+                # Continue with other files even if one fails
+        
+        return {
+            "success": True,
+            "message": f"Task {task_id} deleted successfully",
+            "data": {
+                "task_id": task_id,
+                "files_deleted": files_deleted,
+                "records_deleted": records_deleted,
+            },
+        }
+    
+    except Exception as e:
+        # Rollback on error
+        session.rollback()
+        error_msg = f"Error deleting task {task_id}: {str(e)}"
+        print(f"[DELETE TASK ERROR]: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/get_video_paths/{task_id}", tags=["stats"])

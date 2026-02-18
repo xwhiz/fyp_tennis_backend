@@ -27,11 +27,17 @@ class CourtDetectorNet:
         for num_frame, image in enumerate(tqdm(frames, disable=not verbose)):
             img = cv2.resize(image, (output_width, output_height))
             inp = img.astype(np.float32) / 255.0
-            inp = torch.tensor(np.rollaxis(inp, 2, 0))
-            inp = inp.unsqueeze(0)
+            inp_tensor = torch.tensor(np.rollaxis(inp, 2, 0))
+            inp_tensor = inp_tensor.unsqueeze(0)
 
-            out = self.model(inp.float().to(self.device))[0]
+            inp_tensor = inp_tensor.float().to(self.device)
+            out = self.model(inp_tensor)[0]
             pred = F.sigmoid(out).detach().cpu().numpy()
+            
+            # Clean up GPU tensors immediately
+            del inp_tensor, out
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             points = []
             for kps_num in range(14):
@@ -65,5 +71,8 @@ class CourtDetectorNet:
                 matrix_trans = cv2.invert(matrix_trans)[1]
             kps_res.append(points)
             matrixes_res.append(matrix_trans)
+            
+            # Clean up intermediate arrays (after processing is complete)
+            del img, inp, pred
 
         return matrixes_res, kps_res
