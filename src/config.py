@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Video Processing
     video_batch_size: int = 500
     
+    # Upload Settings
+    upload_chunk_size: int = 20 * 1024 * 1024  # 20MB in bytes (default: 20971520)
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -44,6 +44,19 @@ def update_task_status(
             session.commit()
 
 
+def update_upload_progress(task_id: int, uploaded_size: int):
+    """Update upload progress in database"""
+    engine = Engine.instance()
+    with Session(engine) as session:
+        statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+        task = session.exec(statement).first()
+        if task:
+            task.uploaded_size = uploaded_size
+            task.updated_at = datetime.now()
+            session.add(task)
+            session.commit()
+
+
 def to_float(x) -> list:
     if x is None:
         return None
