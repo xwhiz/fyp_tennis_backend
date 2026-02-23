@@ -133,6 +133,8 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 def get_all_tasks(session: SessionDep):
     statement = select(BackgroundTask)
     tasks = session.exec(statement).all()
+    # make the id a string
+    tasks = [{"id": str(task.id), "name": task.name, "status": task.status, "description": task.description, "created_at": task.created_at, "updated_at": task.updated_at, "total_upload_size": task.total_upload_size, "uploaded_size": task.uploaded_size, "is_uploaded_fully": task.is_uploaded_fully, "progress": task.progress} for task in tasks]
     return {
         "success": True,
         "data": tasks,
@@ -471,7 +473,13 @@ def delete_task(task_id: int, session: SessionDep):
         
         # Input video from BackgroundTask
         if task.video_path:
-            file_paths_to_delete.append(task.video_path)
+            # only delete the video if not referenced by any other BackgroundTask
+            video_paths_stmt = select(BackgroundTask).where(BackgroundTask.video_path == task.video_path)
+            video_paths = session.exec(video_paths_stmt).all()
+            if len(video_paths) == 0:
+                file_paths_to_delete.append(task.video_path)
+            else:
+                print(f"[DELETE TASK WARNING]: Video {task.video_path} is referenced by other BackgroundTasks. Not deleting.")
         
         # Get VideoPaths if exists
         video_paths_stmt = select(VideoPaths).where(VideoPaths.task_id == task_id)
@@ -558,7 +566,7 @@ def delete_task(task_id: int, session: SessionDep):
             "success": True,
             "message": f"Task {task_id} deleted successfully",
             "data": {
-                "task_id": task_id,
+                "task_id": str(task_id),
                 "files_deleted": files_deleted,
                 "records_deleted": records_deleted,
             },
@@ -763,6 +771,8 @@ async def get_thumbnail(
         )
 
     thumbnail_dict = ThumbnailSchema.model_validate(thumbnail).model_dump()
+    # make the id a string
+    thumbnail_dict = {"id": str(thumbnail.id), "thumbnail_path": thumbnail.thumbnail_path, "created_at": thumbnail.created_at, "updated_at": thumbnail.updated_at}
     return (
         thumbnail_dict
         if not is_api
