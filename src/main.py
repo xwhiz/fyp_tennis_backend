@@ -9,7 +9,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Optional
 
 
 import cv2
@@ -188,8 +188,91 @@ async def handle_process_video_request(
     name: str = Form(...),
     video_file: UploadFile = File(...),
     total_size: int = Form(int),
+    duplicate_task: bool = Form(False),
+    task_id: Optional[int] = Form(None),
 ) -> ProcessVideoResponse:
-    # Validate file type
+    # Validate duplicate request
+    if duplicate_task and task_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="task_id required when duplicate_task is True",
+        )
+
+    # Handle duplicate task request
+    if duplicate_task and task_id is not None:
+        with Session(Engine.instance()) as session:
+            statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+            existing_task = session.exec(statement).first()
+
+            if not existing_task:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Task with id {task_id} not found",
+                )
+
+            import os
+            os.makedirs("./uploads", exist_ok=True)
+            os.makedirs("./uploads/temp", exist_ok=True)
+            chunk_size = settings.upload_chunk_size
+            file_path = existing_task.video_path
+            file_name = os.path.basename(file_path) if file_path else video_file.filename
+
+            if existing_task.is_uploaded_fully:
+                # Create new task reusing the already-uploaded video; start processing
+                new_task = BackgroundTask(
+                    progress=0.0,
+                    name=name,
+                    status="pending",
+                    video_path=existing_task.video_path,
+                    description=f"Processing video: {name}",
+                    total_upload_size=existing_task.total_upload_size,
+                    uploaded_size=existing_task.total_upload_size,
+                    is_uploaded_fully=True,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                )
+                session.add(new_task)
+                session.commit()
+                session.refresh(new_task)
+                process_video_task.delay(
+                    int(new_task.id), new_task.video_path, new_task.name
+                )
+                return {
+                    "success": True,
+                    "message": "Duplicate task created. Processing started.",
+                    "data": {
+                        "process_id": str(new_task.id),
+                        "filename": video_file.filename,
+                        "name": name,
+                        "file_path": new_task.video_path,
+                        "file_name": file_name,
+                        "total_size": new_task.total_upload_size,
+                        "chunk_size": chunk_size,
+                        "requires_multipart": False,
+                    },
+                }
+            else:
+                # Return existing task for client to resume chunk uploads
+                needs_multipart = (
+                    not existing_task.is_uploaded_fully
+                    and existing_task.total_upload_size >= chunk_size
+                )
+                return {
+                    "success": True,
+                    "message": "Duplicate task found. Using existing task.",
+                    "data": {
+                        "process_id": str(existing_task.id),
+                        "filename": video_file.filename,
+                        "name": existing_task.name,
+                        "file_path": file_path,
+                        "file_name": file_name,
+                        "total_size": existing_task.total_upload_size,
+                        "chunk_size": chunk_size,
+                        "requires_multipart": needs_multipart,
+                    },
+                }
+
+    # Normal flow: validate file type
     if not video_file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="File must be a video")
 
@@ -297,6 +380,8 @@ async def handle_process_video_request(
                     "name": name,
                     "file_path": file_path,
                     "file_name": unique_filename,
+                    "total_size": total_size,
+                    "chunk_size": chunk_size,
                     "requires_multipart": False,
                 },
             }
