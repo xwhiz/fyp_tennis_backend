@@ -1,6 +1,7 @@
 from math import ceil
 import time
 import gc
+import os
 from collections import defaultdict
 
 import cv2
@@ -24,8 +25,10 @@ from src.db.utils import (
     save_speed_in_db,
     save_thumbnail_in_db,
     save_video_paths_in_db,
+    save_shot_annotation_in_db,
     update_task_status,
 )
+from src.core.shot_classifier import ShotClassifier
 from src.schemas.speed_at import SpeedAt
 from src.core.court_reference import CourtReference
 from src.config import settings
@@ -287,8 +290,43 @@ def get_sources_from_source_indices(transformed_track, source_indices):
 
 
 def get_shot_type(
-    sources, destination, player_top, player_bottom
+    sources, destination, player_top, player_bottom, classifier: ShotClassifier = None
 ) -> Literal["forehand", "backhand", "unknown"]:
+    # Try to use ML model if available
+    if classifier is not None and classifier.is_trained():
+        try:
+            # Get player positions for feature extraction
+            player_top_pos = player_top[0] if len(player_top) > 0 and player_top[0] is not None else None
+            player_bottom_pos = player_bottom[0] if len(player_bottom) > 0 and player_bottom[0] is not None else None
+            
+            # Prepare position data for feature extraction
+            player_pos_top = None
+            player_pos_bottom = None
+            
+            if player_top_pos is not None:
+                bbox = player_top_pos[0] if isinstance(player_top_pos, tuple) else None
+                if bbox is not None:
+                    player_pos_top = {"bbox": bbox.tolist() if isinstance(bbox, np.ndarray) else bbox}
+            
+            if player_bottom_pos is not None:
+                bbox = player_bottom_pos[0] if isinstance(player_bottom_pos, tuple) else None
+                if bbox is not None:
+                    player_pos_bottom = {"bbox": bbox.tolist() if isinstance(bbox, np.ndarray) else bbox}
+            
+            # Prepare ball position
+            ball_pos = {"x": float(destination[0]), "y": float(destination[1])} if destination[0] is not None else None
+            
+            # Extract features and predict
+            net_y = court_ref.net[0][1]
+            features = classifier.extract_features(
+                player_pos_top, player_pos_bottom, ball_pos, net_y
+            )
+            prediction = classifier.predict(features)
+            return prediction
+        except Exception as e:
+            print(f"[SHOT TYPE]: Error using ML model, falling back to rule-based: {str(e)}")
+    
+    # Fallback to rule-based logic
     # Filter out None values from player lists
     player_top_filtered = [player for player in player_top if player is not None]
     player_bottom_filtered = [player for player in player_bottom if player is not None]
@@ -440,6 +478,156 @@ def process_video(
     # Update progress to 0.9 after finding ball hits is complete
     update_task_status(task_id, "processing", round(0.9, 3), "Calculating speed")
 
+    # Initialize shot classifier
+    shot_classifier = ShotClassifier()
+    
+    # Create directory for shot images
+    shot_images_dir = f"./output/shot_images"
+    os.makedirs(shot_images_dir, exist_ok=True)
+
+    # Capture shot annotations at direction change frames (where shots actually happen)
+    # Create a mapping from direction change to bounce for shot type calculation
+    direction_change_to_bounce = {}
+    for bounce_index, source_indices in change_before_bounce.items():
+        for source_index, _ in source_indices:
+            if source_index in direction_change_indices:
+                direction_change_to_bounce[source_index] = bounce_index
+
+    # Process each direction change to capture shot annotations
+    for direction_change_index in direction_change_indices:
+        # Only process if this direction change leads to a bounce
+        if direction_change_index not in direction_change_to_bounce:
+            continue
+        
+        bounce_index = direction_change_to_bounce[direction_change_index]
+        destination = transformed_track[bounce_index]
+        if destination[0] is None:
+            continue
+        
+        # Get source indices for this bounce to calculate shot type
+        source_indices = change_before_bounce.get(bounce_index, [])
+        if not source_indices:
+            continue
+        
+        sources, indices = get_sources_from_source_indices(
+            transformed_track, source_indices
+        )
+        
+        # Get player positions for shot type calculation (use bounce frame players)
+        player_top_at_bounce = [player_top[index] for index in indices]
+        player_bottom_at_bounce = [player_bottom[index] for index in indices]
+        
+        shot_type = get_shot_type(
+            sources,
+            destination,
+            player_top_at_bounce,
+            player_bottom_at_bounce,
+            classifier=shot_classifier,
+        )
+        
+        # Capture shot annotation at direction change frame (when shot happens)
+        try:
+            # Get frame at direction_change_index (not bounce_index)
+            input_video_capture.set(cv2.CAP_PROP_POS_FRAMES, direction_change_index)
+            ret, frame = input_video_capture.read()
+            
+            if ret and frame is not None and frame.size > 0:
+                # Get homography matrix for this frame to re-detect all players
+                if direction_change_index < len(homography_matrices) and homography_matrices[direction_change_index] is not None:
+                    inv_matrix = homography_matrices[direction_change_index]
+                    
+                    # Re-detect ALL players at this frame (without filtering)
+                    all_top_players, all_bottom_players = person_detector.detect_top_and_bottom_players(
+                        frame, inv_matrix, filter_players=False
+                    )
+                    
+                    # Prepare data structures for all players
+                    player_image_paths = {"top": [], "bottom": []}
+                    player_positions_top = {"players": []}
+                    player_positions_bottom = {"players": []}
+                    
+                    # Save images and positions for ALL top players
+                    for idx, player in enumerate(all_top_players):
+                        if player is not None:
+                            bbox = player[0] if isinstance(player, tuple) else None
+                            point = player[1] if isinstance(player, tuple) and len(player) > 1 else None
+                            
+                            if bbox is not None:
+                                # Store position
+                                bbox_list = bbox.tolist() if isinstance(bbox, np.ndarray) else list(bbox)
+                                point_list = point if point is None else (point.tolist() if isinstance(point, np.ndarray) else list(point))
+                                player_positions_top["players"].append({
+                                    "bbox": bbox_list,
+                                    "point": point_list
+                                })
+                                
+                                # Crop and save image
+                                x1, y1, x2, y2 = map(int, bbox[:4])
+                                h, w = frame.shape[:2]
+                                x1, y1 = max(0, x1), max(0, y1)
+                                x2, y2 = min(w, x2), min(h, y2)
+                                
+                                if x2 > x1 and y2 > y1:
+                                    player_crop = frame[y1:y2, x1:x2]
+                                    
+                                    # Check if crop is not empty
+                                    if player_crop.size > 0:
+                                        image_filename = f"shot_{task_id}_{direction_change_index}_top_{idx}_{int(time.time() * 1000)}.jpg"
+                                        image_path = os.path.join(shot_images_dir, image_filename)
+                                        cv2.imwrite(image_path, player_crop)
+                                        player_image_paths["top"].append(f"shot_images/{image_filename}")
+                    
+                    # Save images and positions for ALL bottom players
+                    for idx, player in enumerate(all_bottom_players):
+                        if player is not None:
+                            bbox = player[0] if isinstance(player, tuple) else None
+                            point = player[1] if isinstance(player, tuple) and len(player) > 1 else None
+                            
+                            if bbox is not None:
+                                # Store position
+                                bbox_list = bbox.tolist() if isinstance(bbox, np.ndarray) else list(bbox)
+                                point_list = point if point is None else (point.tolist() if isinstance(point, np.ndarray) else list(point))
+                                player_positions_bottom["players"].append({
+                                    "bbox": bbox_list,
+                                    "point": point_list
+                                })
+                                
+                                # Crop and save image
+                                x1, y1, x2, y2 = map(int, bbox[:4])
+                                h, w = frame.shape[:2]
+                                x1, y1 = max(0, x1), max(0, y1)
+                                x2, y2 = min(w, x2), min(h, y2)
+                                
+                                if x2 > x1 and y2 > y1:
+                                    player_crop = frame[y1:y2, x1:x2]
+                                    
+                                    # Check if crop is not empty
+                                    if player_crop.size > 0:
+                                        image_filename = f"shot_{task_id}_{direction_change_index}_bottom_{idx}_{int(time.time() * 1000)}.jpg"
+                                        image_path = os.path.join(shot_images_dir, image_filename)
+                                        cv2.imwrite(image_path, player_crop)
+                                        player_image_paths["bottom"].append(f"shot_images/{image_filename}")
+                    
+                    # Prepare ball position at direction change
+                    ball_at_direction_change = transformed_track[direction_change_index]
+                    ball_pos = None
+                    if ball_at_direction_change[0] is not None:
+                        ball_pos = {"x": float(ball_at_direction_change[0]), "y": float(ball_at_direction_change[1])}
+                    
+                    # Only save if we captured at least one player image
+                    if player_image_paths["top"] or player_image_paths["bottom"]:
+                        save_shot_annotation_in_db(
+                            task_id=task_id,
+                            frame_index=direction_change_index,
+                            player_position_top=player_positions_top if player_positions_top["players"] else None,
+                            player_position_bottom=player_positions_bottom if player_positions_bottom["players"] else None,
+                            ball_position=ball_pos,
+                            player_image_paths=player_image_paths if (player_image_paths["top"] or player_image_paths["bottom"]) else None,
+                            predicted_shot_type=shot_type,
+                        )
+        except Exception as e:
+            print(f"[SHOT ANNOTATION]: Error saving shot annotation for direction change frame {direction_change_index}: {str(e)}")
+
     speed_before_bounce = dict()
     for bounce_index, source_indices in change_before_bounce.items():
         destination = transformed_track[bounce_index]
@@ -449,12 +637,18 @@ def process_video(
             transformed_track, source_indices
         )
 
+        # Get player positions at the bounce frame
+        player_top_at_bounce = [player_top[index] for index in indices]
+        player_bottom_at_bounce = [player_bottom[index] for index in indices]
+        
         shot_type = get_shot_type(
             sources,
             destination,
-            [player_top[index] for index in indices],
-            [player_bottom[index] for index in indices],
+            player_top_at_bounce,
+            player_bottom_at_bounce,
+            classifier=shot_classifier,
         )
+        
         pixel_distance = np.mean([euclidean(source, destination) for source in sources])
         meter_distance = pixel_distance * PIXEL_TO_METER_RATIO
         time_difference = (

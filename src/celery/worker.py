@@ -10,7 +10,10 @@ from src.core.bounce_detector import BounceDetector
 from src.core.court_detection_net import CourtDetectorNet
 from src.core.person_detector import PersonDetector
 from src.core.process_video import process_video, cleanup_memory
-from src.db.utils import update_task_status
+from src.core.shot_classifier import ShotClassifier
+from src.core.court_reference import CourtReference
+from src.db.utils import update_task_status, get_all_annotated_shots, update_model_metrics
+import numpy as np
 
 
 celery = Celery(settings.celery_app_name)
@@ -113,3 +116,80 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
         # Ensure memory cleanup even if task fails
         cleanup_memory(_device)
         gc.collect()
+
+
+@celery.task(name="train_shot_classifier_task", bind=True)
+def train_shot_classifier_task(self):
+    """Celery task to train the shot classifier model."""
+    try:
+        print("[CELERY WORKER]: Starting shot classifier training")
+        
+        # Update status to training
+        update_model_metrics(training_status="training")
+        
+        # Get all annotated shots
+        annotated_shots = get_all_annotated_shots()
+        
+        if len(annotated_shots) == 0:
+            raise ValueError("No annotated shots available for training")
+        
+        print(f"[CELERY WORKER]: Found {len(annotated_shots)} annotated shots")
+        
+        # Initialize classifier
+        classifier = ShotClassifier()
+        court_ref = CourtReference()
+        net_y = court_ref.net[0][1]
+        
+        # Extract features and labels
+        X = []
+        y = []
+        
+        for shot in annotated_shots:
+            try:
+                # Extract features
+                features = classifier.extract_features(
+                    shot.player_position_top,
+                    shot.player_position_bottom,
+                    shot.ball_position,
+                    net_y,
+                )
+                X.append(features)
+                y.append(shot.annotated_shot_type)
+            except Exception as e:
+                print(f"[CELERY WORKER]: Error extracting features for shot {shot.id}: {str(e)}")
+                continue
+        
+        if len(X) == 0:
+            raise ValueError("No valid features extracted from annotated shots")
+        
+        X = np.array(X)
+        y = np.array(y)
+        
+        print(f"[CELERY WORKER]: Training on {len(X)} samples")
+        
+        # Train model
+        metrics = classifier.train(X, y)
+        
+        # Update model metrics
+        update_model_metrics(
+            training_status="trained",
+            accuracy=metrics["accuracy"],
+            precision=metrics["precision"],
+            recall=metrics["recall"],
+            f1_score=metrics["f1_score"],
+            total_samples=metrics["total_samples"],
+        )
+        
+        print(f"[CELERY WORKER]: Training completed. Accuracy: {metrics['accuracy']:.4f}")
+        
+        return {
+            "success": True,
+            "message": "Model trained successfully",
+            "metrics": metrics,
+        }
+    
+    except Exception as e:
+        error_msg = f"Error training shot classifier: {str(e)}"
+        print(f"[CELERY WORKER ERROR]: {error_msg}")
+        update_model_metrics(training_status="failed")
+        raise

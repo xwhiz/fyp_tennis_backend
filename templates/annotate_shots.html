@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Annotate Shots - Forehand/Backhand</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen py-8">
+    <div class="container mx-auto px-4">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6">Shot Annotation</h1>
+
+        <!-- Model Metrics Section -->
+        {% if metrics %}
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Model Status</h2>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div>
+                    <p class="text-sm text-gray-600">Status</p>
+                    <p class="text-lg font-semibold">{{ metrics.training_status }}</p>
+                </div>
+                {% if metrics.accuracy %}
+                <div>
+                    <p class="text-sm text-gray-600">Accuracy</p>
+                    <p class="text-lg font-semibold">{{ "%.2f"|format(metrics.accuracy * 100) }}%</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-600">Precision</p>
+                    <p class="text-lg font-semibold">{{ "%.2f"|format(metrics.precision * 100) }}%</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-600">Recall</p>
+                    <p class="text-lg font-semibold">{{ "%.2f"|format(metrics.recall * 100) }}%</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-600">F1 Score</p>
+                    <p class="text-lg font-semibold">{{ "%.2f"|format(metrics.f1_score * 100) }}%</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Shots Grid -->
+        {% if has_unannotated %}
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4">Unannotated Shots ({{ shots|length }})</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="shots-grid">
+                {% for shot in shots %}
+                <div class="border rounded-lg p-4 bg-gray-50" data-shot-id="{{ shot.id }}">
+                    <!-- Player Images Section -->
+                    <div class="mb-4">
+                        <h3 class="text-sm font-semibold text-gray-700 mb-2">Detected Players</h3>
+                        <div class="grid grid-cols-2 gap-2">
+                            <!-- Top Players -->
+                            <div>
+                                <p class="text-xs text-gray-600 mb-1">Top Court</p>
+                                {% if shot.player_image_paths and shot.player_image_paths.top %}
+                                {% for img_path in shot.player_image_paths.top %}
+                                <div class="mb-2">
+                                    <img src="/api/shot-image/{{ shot.id }}?side=top&index={{ loop.index0 }}"
+                                        alt="Top Player {{ loop.index }}"
+                                        class="w-full h-32 object-contain rounded border">
+                                    <p class="text-xs text-gray-500 text-center mt-1">Player {{ loop.index }}</p>
+                                </div>
+                                {% endfor %}
+                                {% elif shot.player_image_path %}
+                                <img src="/api/shot-image/{{ shot.id }}" alt="Player"
+                                    class="w-full h-32 object-contain rounded border">
+                                {% else %}
+                                <div class="w-full h-32 bg-gray-200 rounded border flex items-center justify-center">
+                                    <p class="text-xs text-gray-500">No image</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                            <!-- Bottom Players -->
+                            <div>
+                                <p class="text-xs text-gray-600 mb-1">Bottom Court</p>
+                                {% if shot.player_image_paths and shot.player_image_paths.bottom %}
+                                {% for img_path in shot.player_image_paths.bottom %}
+                                <div class="mb-2">
+                                    <img src="/api/shot-image/{{ shot.id }}?side=bottom&index={{ loop.index0 }}"
+                                        alt="Bottom Player {{ loop.index }}"
+                                        class="w-full h-32 object-contain rounded border">
+                                    <p class="text-xs text-gray-500 text-center mt-1">Player {{ loop.index }}</p>
+                                </div>
+                                {% endfor %}
+                                {% else %}
+                                <div class="w-full h-32 bg-gray-200 rounded border flex items-center justify-center">
+                                    <p class="text-xs text-gray-500">No image</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Annotation Data Section -->
+                    <div class="mb-4 border-t pt-3">
+                        <h3 class="text-sm font-semibold text-gray-700 mb-2">Shot Data</h3>
+                        <div class="space-y-1 text-xs">
+                            <p><span class="font-medium">Frame:</span> {{ shot.frame_index }}</p>
+                            <p><span class="font-medium">Task ID:</span> {{ shot.task_id }}</p>
+                            <p><span class="font-medium">Predicted:</span>
+                                <span
+                                    class="font-semibold {% if shot.predicted_shot_type == 'forehand' %}text-green-600{% elif shot.predicted_shot_type == 'backhand' %}text-blue-600{% else %}text-gray-600{% endif %}">
+                                    {{ shot.predicted_shot_type }}
+                                </span>
+                            </p>
+                            {% if shot.ball_position %}
+                            <p><span class="font-medium">Ball:</span> ({{ "%.1f"|format(shot.ball_position.get('x', 0))
+                                }}, {{ "%.1f"|format(shot.ball_position.get('y', 0)) }})</p>
+                            {% endif %}
+                            {% if shot.player_position_top and shot.player_position_top.players %}
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-gray-600 hover:text-gray-800 text-xs">Top Players
+                                    ({{ shot.player_position_top.players|length }})</summary>
+                                <div class="ml-4 mt-1 space-y-1">
+                                    {% for player in shot.player_position_top.players %}
+                                    <p class="text-xs">Player {{ loop.index }}: ({{ player.bbox[0]|int }}, {{
+                                        player.bbox[1]|int }}, {{ player.bbox[2]|int }}, {{ player.bbox[3]|int }})</p>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                            {% endif %}
+                            {% if shot.player_position_bottom and shot.player_position_bottom.players %}
+                            <details class="mt-2">
+                                <summary class="cursor-pointer text-gray-600 hover:text-gray-800 text-xs">Bottom Players
+                                    ({{ shot.player_position_bottom.players|length }})</summary>
+                                <div class="ml-4 mt-1 space-y-1">
+                                    {% for player in shot.player_position_bottom.players %}
+                                    <p class="text-xs">Player {{ loop.index }}: ({{ player.bbox[0]|int }}, {{
+                                        player.bbox[1]|int }}, {{ player.bbox[2]|int }}, {{ player.bbox[3]|int }})</p>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Annotation Controls -->
+                    <div class="mb-3">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Annotation:</label>
+                        <select class="w-full border rounded px-3 py-2 text-sm annotation-select"
+                            data-shot-id="{{ shot.id }}">
+                            <option value="unknown" {% if shot.annotated_shot_type=='unknown' %}selected{% endif %}>
+                                Unknown</option>
+                            <option value="forehand" {% if shot.annotated_shot_type=='forehand' %}selected{% endif %}>
+                                Forehand</option>
+                            <option value="backhand" {% if shot.annotated_shot_type=='backhand' %}selected{% endif %}>
+                                Backhand</option>
+                        </select>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex gap-2">
+                        <button
+                            class="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded text-sm save-btn"
+                            data-shot-id="{{ shot.id }}">
+                            Save
+                        </button>
+                        <button
+                            class="bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded text-sm discard-btn"
+                            data-shot-id="{{ shot.id }}">
+                            Discard
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% else %}
+        <!-- No Unannotated Shots - Show Train Button -->
+        <div class="bg-white rounded-lg shadow-md p-6 text-center">
+            <h2 class="text-xl font-semibold mb-4">All Shots Annotated!</h2>
+            <p class="text-gray-600 mb-6">You have annotated all available shots. You can now train the model.</p>
+            <button id="train-btn"
+                class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg text-lg">
+                Train Model
+            </button>
+            <div id="training-status" class="mt-4 hidden">
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <p class="text-blue-800 font-semibold mb-2">Training Status:</p>
+                    <p id="status-text" class="text-blue-600">Starting training...</p>
+                    <div class="mt-2">
+                        <div class="bg-blue-200 rounded-full h-2.5">
+                            <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="training-results" class="mt-4 hidden">
+                <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <p class="text-green-800 font-semibold mb-2">Training Completed!</p>
+                    <div id="results-content" class="text-green-700"></div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        // Save annotation handlers
+        document.querySelectorAll('.save-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const shotId = this.dataset.shotId;
+                const select = document.querySelector(`.annotation-select[data-shot-id="${shotId}"]`);
+                const annotatedType = select.value;
+
+                try {
+                    const response = await fetch(`/api/update-annotation/${shotId}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            annotated_shot_type: annotatedType
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Remove the shot card
+                        const card = document.querySelector(`[data-shot-id="${shotId}"]`);
+                        if (card) {
+                            card.style.opacity = '0.5';
+                            card.querySelector('.save-btn').textContent = 'Saved!';
+                            card.querySelector('.save-btn').classList.remove('bg-blue-500', 'hover:bg-blue-600');
+                            card.querySelector('.save-btn').classList.add('bg-green-500');
+
+                            setTimeout(() => {
+                                card.remove();
+                                // Check if any shots left
+                                const remainingShots = document.querySelectorAll('[data-shot-id]');
+                                if (remainingShots.length === 0) {
+                                    location.reload();
+                                }
+                            }, 1000);
+                        }
+                    } else {
+                        alert('Error saving annotation');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error saving annotation');
+                }
+            });
+        });
+
+        // Discard annotation handlers
+        document.querySelectorAll('.discard-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const shotId = this.dataset.shotId;
+
+                if (!confirm('Are you sure you want to discard this annotation? This action cannot be undone.')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/discard-annotation/${shotId}`, {
+                        method: 'POST'
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Remove the shot card
+                        const card = document.querySelector(`[data-shot-id="${shotId}"]`);
+                        if (card) {
+                            card.style.transition = 'opacity 0.3s';
+                            card.style.opacity = '0';
+
+                            setTimeout(() => {
+                                card.remove();
+                                // Check if any shots left
+                                const remainingShots = document.querySelectorAll('[data-shot-id]');
+                                if (remainingShots.length === 0) {
+                                    location.reload();
+                                }
+                            }, 300);
+                        }
+                    } else {
+                        alert('Error discarding annotation');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error discarding annotation');
+                }
+            });
+        });
+
+        // Train model handler
+        const trainBtn = document.getElementById('train-btn');
+        if (trainBtn) {
+            trainBtn.addEventListener('click', async function () {
+                this.disabled = true;
+                this.textContent = 'Training...';
+
+                const statusDiv = document.getElementById('training-status');
+                const resultsDiv = document.getElementById('training-results');
+                statusDiv.classList.remove('hidden');
+                resultsDiv.classList.add('hidden');
+
+                try {
+                    // Start training
+                    const trainResponse = await fetch('/api/train-model-forehand-backhand', {
+                        method: 'POST'
+                    });
+
+                    const trainData = await trainResponse.json();
+
+                    if (!trainData.success) {
+                        throw new Error(trainData.message || 'Failed to start training');
+                    }
+
+                    // Poll for metrics
+                    const pollInterval = setInterval(async () => {
+                        try {
+                            const metricsResponse = await fetch('/api/model-metrics-forehand-backhand');
+                            const metricsData = await metricsResponse.json();
+
+                            if (metricsData.success && metricsData.data) {
+                                const metrics = metricsData.data;
+                                document.getElementById('status-text').textContent =
+                                    `Status: ${metrics.training_status}`;
+
+                                if (metrics.training_status === 'trained') {
+                                    clearInterval(pollInterval);
+                                    statusDiv.classList.add('hidden');
+                                    resultsDiv.classList.remove('hidden');
+
+                                    const resultsContent = document.getElementById('results-content');
+                                    resultsContent.innerHTML = `
+                                        <p><strong>Accuracy:</strong> ${(metrics.accuracy * 100).toFixed(2)}%</p>
+                                        <p><strong>Precision:</strong> ${(metrics.precision * 100).toFixed(2)}%</p>
+                                        <p><strong>Recall:</strong> ${(metrics.recall * 100).toFixed(2)}%</p>
+                                        <p><strong>F1 Score:</strong> ${(metrics.f1_score * 100).toFixed(2)}%</p>
+                                        <p><strong>Training Samples:</strong> ${metrics.total_samples}</p>
+                                    `;
+
+                                    trainBtn.disabled = false;
+                                    trainBtn.textContent = 'Train Model';
+
+                                    // Reload page after 3 seconds to show updated metrics
+                                    setTimeout(() => {
+                                        location.reload();
+                                    }, 3000);
+                                } else if (metrics.training_status === 'failed') {
+                                    clearInterval(pollInterval);
+                                    document.getElementById('status-text').textContent = 'Training failed';
+                                    trainBtn.disabled = false;
+                                    trainBtn.textContent = 'Train Model';
+                                }
+                            }
+                        } catch (error) {
+                            console.error('Error polling metrics:', error);
+                        }
+                    }, 2000); // Poll every 2 seconds
+
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error starting training: ' + error.message);
+                    trainBtn.disabled = false;
+                    trainBtn.textContent = 'Train Model';
+                    statusDiv.classList.add('hidden');
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>

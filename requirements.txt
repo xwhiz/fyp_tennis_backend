@@ -10,3 +10,6 @@ ultralytics
 supervision
 fastapi[standard]>=0.118.0
 sqlmodel>=0.0.25
+scikit-learn>=1.3.0
+joblib>=1.3.0
+jinja2>=3.1.0

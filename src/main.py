@@ -28,6 +28,8 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
@@ -46,6 +48,12 @@ from src.db.utils import (
     save_speed_in_db,
     save_video_paths_in_db,
     update_upload_progress,
+    get_unannotated_shots,
+    update_shot_annotation,
+    discard_shot_annotation,
+    get_all_annotated_shots,
+    get_model_metrics,
+    update_model_metrics,
 )
 from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
@@ -64,7 +72,10 @@ from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
-from src.celery.worker import process_video_task, get_celery
+from src.models.shot_annotations import ShotAnnotations
+from src.models.model_metrics import ModelMetrics
+from src.schemas.shot_annotations import ShotAnnotationSchema, UpdateAnnotationSchema, ModelMetricsSchema
+from src.celery.worker import process_video_task, get_celery, train_shot_classifier_task
 
 
 @asynccontextmanager
@@ -123,10 +134,14 @@ app = FastAPI(
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("output", exist_ok=True)
+os.makedirs("templates", exist_ok=True)
 
 # static files
 app.mount("/output", StaticFiles(directory="output"), name="output")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+# templates
+templates = Jinja2Templates(directory="templates")
 
 
 @app.get("/all_tasks", tags=["tasks"])
@@ -958,6 +973,222 @@ async def stream_uploads_file(filename: str, request: Request):
 
     media_type, _ = mimetypes.guess_type(file_path)
     return StreamingResponse(iterfile(file_path), media_type=media_type)
+
+
+@app.get("/annotate-shots", tags=["annotation"], response_class=HTMLResponse)
+async def annotate_shots(request: Request, session: SessionDep):
+    """Render annotation interface for shot classification."""
+    unannotated_shots = get_unannotated_shots()
+    metrics = get_model_metrics()
+    
+    # Convert shots to schema format
+    shots_data = []
+    for shot in unannotated_shots:
+        shot_dict = {
+            "id": shot.id,
+            "task_id": shot.task_id,
+            "frame_index": shot.frame_index,
+            "player_image_path": shot.player_image_path,
+            "player_image_paths": shot.player_image_paths,
+            "player_position_top": shot.player_position_top,
+            "player_position_bottom": shot.player_position_bottom,
+            "ball_position": shot.ball_position,
+            "predicted_shot_type": shot.predicted_shot_type,
+            "annotated_shot_type": shot.annotated_shot_type,
+            "discarded": shot.discarded if hasattr(shot, 'discarded') else False,
+        }
+        shots_data.append(shot_dict)
+    
+    metrics_data = None
+    if metrics:
+        metrics_data = {
+            "training_status": metrics.training_status,
+            "accuracy": metrics.accuracy,
+            "precision": metrics.precision,
+            "recall": metrics.recall,
+            "f1_score": metrics.f1_score,
+            "total_samples": metrics.total_samples,
+            "last_trained_at": metrics.updated_at.isoformat() if metrics.updated_at else None,
+        }
+    
+    return templates.TemplateResponse(
+        "annotate_shots.html",
+        {
+            "request": request,
+            "shots": shots_data,
+            "metrics": metrics_data,
+            "has_unannotated": len(shots_data) > 0,
+        },
+    )
+
+
+@app.get("/api/unannotated-shots", tags=["annotation"])
+async def get_unannotated_shots_api(session: SessionDep):
+    """Get all unannotated shots."""
+    shots = get_unannotated_shots()
+    shots_data = []
+    for shot in shots:
+        shot_dict = {
+            "id": shot.id,
+            "task_id": shot.task_id,
+            "frame_index": shot.frame_index,
+            "player_image_path": shot.player_image_path,
+            "player_image_paths": shot.player_image_paths,
+            "player_position_top": shot.player_position_top,
+            "player_position_bottom": shot.player_position_bottom,
+            "ball_position": shot.ball_position,
+            "predicted_shot_type": shot.predicted_shot_type,
+            "annotated_shot_type": shot.annotated_shot_type,
+            "discarded": shot.discarded if hasattr(shot, 'discarded') else False,
+        }
+        shots_data.append(shot_dict)
+    
+    return {
+        "success": True,
+        "data": shots_data,
+        "count": len(shots_data),
+    }
+
+
+@app.post("/api/update-annotation/{shot_id}", tags=["annotation"])
+async def update_annotation_api(
+    shot_id: int,
+    annotation: UpdateAnnotationSchema,
+    session: SessionDep,
+):
+    """Update annotation for a shot."""
+    if annotation.annotated_shot_type not in ["forehand", "backhand", "unknown"]:
+        raise HTTPException(
+            status_code=400,
+            detail="annotated_shot_type must be 'forehand', 'backhand', or 'unknown'",
+        )
+    
+    success = update_shot_annotation(shot_id, annotation.annotated_shot_type)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Shot with id {shot_id} not found")
+    
+    return {
+        "success": True,
+        "message": f"Annotation updated for shot {shot_id}",
+    }
+
+
+@app.post("/api/train-model-forehand-backhand", tags=["annotation"])
+async def train_model_api(session: SessionDep):
+    """Start training the shot classifier model."""
+    # Check if there are annotated shots
+    annotated_shots = get_all_annotated_shots()
+    if len(annotated_shots) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No annotated shots available. Please annotate some shots first.",
+        )
+    
+    # Update metrics to show training started
+    update_model_metrics(training_status="training")
+    
+    # Start Celery task
+    task = train_shot_classifier_task.delay()
+    
+    return {
+        "success": True,
+        "message": "Model training started",
+        "task_id": task.id,
+    }
+
+
+@app.get("/api/model-metrics-forehand-backhand", tags=["annotation"])
+async def get_model_metrics_api(session: SessionDep):
+    """Get model training metrics."""
+    metrics = get_model_metrics()
+    
+    if metrics is None:
+        return {
+            "success": True,
+            "data": {
+                "training_status": "not_trained",
+                "accuracy": None,
+                "precision": None,
+                "recall": None,
+                "f1_score": None,
+                "total_samples": None,
+                "last_trained_at": None,
+            },
+        }
+    
+    return {
+        "success": True,
+        "data": {
+            "training_status": metrics.training_status,
+            "accuracy": metrics.accuracy,
+            "precision": metrics.precision,
+            "recall": metrics.recall,
+            "f1_score": metrics.f1_score,
+            "total_samples": metrics.total_samples,
+            "last_trained_at": metrics.updated_at.isoformat() if metrics.updated_at else None,
+        },
+    }
+
+
+@app.get("/api/shot-image/{shot_id}", tags=["annotation"])
+async def get_shot_image(
+    shot_id: int, 
+    session: SessionDep,
+    side: Optional[str] = Query(None, description="'top' or 'bottom'"),
+    index: Optional[int] = Query(None, description="Player index (0-based)")
+):
+    """Serve player image for a shot. Supports multiple players via side and index params."""
+    statement = select(ShotAnnotations).where(ShotAnnotations.id == shot_id)
+    shot = session.exec(statement).first()
+    
+    if not shot:
+        raise HTTPException(status_code=404, detail="Shot not found")
+    
+    # Try new player_image_paths format first
+    if shot.player_image_paths and isinstance(shot.player_image_paths, dict):
+        if side and index is not None:
+            # Get specific player image
+            side_paths = shot.player_image_paths.get(side, [])
+            if 0 <= index < len(side_paths):
+                image_path = os.path.join("./output", side_paths[index])
+                if os.path.exists(image_path):
+                    return FileResponse(image_path)
+        elif side:
+            # Get first player of specified side
+            side_paths = shot.player_image_paths.get(side, [])
+            if side_paths:
+                image_path = os.path.join("./output", side_paths[0])
+                if os.path.exists(image_path):
+                    return FileResponse(image_path)
+        else:
+            # Get first available image
+            for side_key in ["top", "bottom"]:
+                side_paths = shot.player_image_paths.get(side_key, [])
+                if side_paths:
+                    image_path = os.path.join("./output", side_paths[0])
+                    if os.path.exists(image_path):
+                        return FileResponse(image_path)
+    
+    # Fallback to old player_image_path format
+    if shot.player_image_path:
+        image_path = os.path.join("./output", shot.player_image_path)
+        if os.path.exists(image_path):
+            return FileResponse(image_path)
+    
+    raise HTTPException(status_code=404, detail="Image file not found")
+
+
+@app.post("/api/discard-annotation/{shot_id}", tags=["annotation"])
+async def discard_annotation_api(shot_id: int, session: SessionDep):
+    """Discard (soft delete) a shot annotation."""
+    success = discard_shot_annotation(shot_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Shot with id {shot_id} not found")
+    
+    return {
+        "success": True,
+        "message": f"Annotation {shot_id} discarded successfully",
+    }
 
 
 if __name__ == "__main__":
