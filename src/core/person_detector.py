@@ -11,7 +11,7 @@ from tqdm import tqdm
 class PersonDetector:
     def __init__(self, dtype=torch.FloatTensor):
         self.detection_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-            pretrained=True
+            weights="FasterRCNN_ResNet50_FPN_Weights.COCO_V1"
         )
         self.detection_model = self.detection_model.to(dtype)
         self.detection_model.eval()
@@ -42,6 +42,12 @@ class PersonDetector:
             if label == PERSON_LABEL and score > person_min_score:
                 persons_boxes.append(box.detach().cpu().numpy())
                 probs.append(score.detach().cpu().numpy())
+        
+        # Clean up GPU tensors immediately
+        del frame_tensor, preds
+        if isinstance(self.dtype, torch.cuda.FloatTensor) or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available() and str(self.dtype).startswith('cuda')):
+            torch.cuda.empty_cache()
+        
         return persons_boxes, probs
 
     def detect_top_and_bottom_players(self, image, inv_matrix, filter_players=False):
@@ -118,4 +124,10 @@ class PersonDetector:
                 person_top, person_bottom = [], []
             persons_top.append(person_top)
             persons_bottom.append(person_bottom)
+            
+            # Periodic memory cleanup for large batches
+            if num_frame > 0 and num_frame % 50 == 0:
+                if isinstance(self.dtype, torch.cuda.FloatTensor) or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available() and str(self.dtype).startswith('cuda')):
+                    torch.cuda.empty_cache()
+        
         return persons_top, persons_bottom

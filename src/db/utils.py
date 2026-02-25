@@ -9,6 +9,7 @@ from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.speed import Speed
+from src.models.player_positions import PlayerPositions
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
 
@@ -24,7 +25,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 def update_task_status(
     task_id: int,
     status: str,
-    progress: int = None,
+    progress: float = None,
     description: str = None,
 ):
     """Update task status in database"""
@@ -39,6 +40,19 @@ def update_task_status(
                 task.description = description
             if progress is not None:
                 task.progress = progress
+            session.add(task)
+            session.commit()
+
+
+def update_upload_progress(task_id: int, uploaded_size: int):
+    """Update upload progress in database"""
+    engine = Engine.instance()
+    with Session(engine) as session:
+        statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+        task = session.exec(statement).first()
+        if task:
+            task.uploaded_size = uploaded_size
+            task.updated_at = datetime.now()
             session.add(task)
             session.commit()
 
@@ -96,6 +110,28 @@ def save_video_paths_in_db(
                 output_path=output_path,
                 minimap_path=minimap_path,
             )
+        )
+        session.commit()
+
+
+def save_player_positions_in_db(task_id: int, player_top: list, player_bottom: list):
+    positions = {}
+    for i in range(len(player_top)):
+        top_bbox = (
+            [float(x) for x in player_top[i][0]]
+            if player_top[i] is not None
+            else None
+        )
+        bottom_bbox = (
+            [float(x) for x in player_bottom[i][0]]
+            if player_bottom[i] is not None
+            else None
+        )
+        positions[i] = {"top": top_bbox, "bottom": bottom_bbox}
+
+    with Session(Engine.instance()) as session:
+        session.add(
+            PlayerPositions(task_id=task_id, positions=json.dumps(positions))
         )
         session.commit()
 

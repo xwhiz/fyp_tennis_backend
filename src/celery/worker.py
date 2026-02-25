@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 import threading
 import torch
 from celery import Celery
@@ -8,7 +9,7 @@ from src.core.ball_detector import BallDetector
 from src.core.bounce_detector import BounceDetector
 from src.core.court_detection_net import CourtDetectorNet
 from src.core.person_detector import PersonDetector
-from src.core.process_video import process_video
+from src.core.process_video import process_video, cleanup_memory
 from src.db.utils import update_task_status
 
 
@@ -34,10 +35,11 @@ celery.conf.update(
 )
 
 # Set default pool type and concurrency for Windows compatibility
-# This may not always work, so also use --pool=threads --concurrency=4 when starting worker on Windows
+# This may not always work, so also use --pool=threads --concurrency=2 when starting worker on Windows
 if sys.platform == "win32":
     celery.conf.worker_pool = "threads"
-    celery.conf.worker_concurrency = 4  # Number of concurrent tasks
+# Set concurrency for all platforms
+celery.conf.worker_concurrency = settings.celery_worker_concurrency  # Number of concurrent tasks
 
 # Module-level variables for models (loaded once per worker process)
 _ball_detector = None
@@ -79,7 +81,7 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
     """Celery task to process video"""
     try:
         # Update task status to pending
-        update_task_status(task_id, "pending", 0, "Waiting in queue to be processed")
+        update_task_status(task_id, "pending", 0.0, "Waiting in queue to be processed")
 
         # Load models (lazy loading - only loads once per worker)
         ball_detector, court_detector, person_detector, bounce_detector = _load_models()
@@ -104,6 +106,10 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
     except Exception as e:
         error_msg = f"Error processing video {task_id}: {str(e)}"
         print(f"[CELERY WORKER ERROR]: {error_msg}")
-        update_task_status(task_id, "failed", 0, error_msg)
+        update_task_status(task_id, "failed", 0.0, error_msg)
         # Re-raise to mark task as failed in Celery
         raise
+    finally:
+        # Ensure memory cleanup even if task fails
+        cleanup_memory(_device)
+        gc.collect()
