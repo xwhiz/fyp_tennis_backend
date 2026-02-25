@@ -9,7 +9,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Optional
 
 
 import cv2
@@ -45,11 +45,13 @@ from src.db.utils import (
     save_direction_change_indices_in_db,
     save_speed_in_db,
     save_video_paths_in_db,
+    update_upload_progress,
 )
 from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
+from src.models.player_positions import PlayerPositions
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.db.utils import update_task_status, SessionDep
 from src.schemas.speed_at import SpeedAt
@@ -57,16 +59,53 @@ from src.schemas.video_paths import VideoPathsSchema
 from src.schemas.ball_track import BallTrackSchema
 from src.schemas.bounces import BouncesSchema
 from src.schemas.direction_change_indices import DirectionChangeIndicesSchema
+from src.schemas.player_positions import PlayerPositionsSchema
 from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
-from src.celery.worker import process_video_task
+from src.celery.worker import process_video_task, get_celery
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Models are now loaded in Celery worker, not in FastAPI app
+    
+    # Re-queue unprocessed tasks on startup
+    try:
+        with Session(Engine.instance()) as session:
+            # Query for tasks that need to be re-queued
+            # Exclude tasks that are not fully uploaded (is_uploaded_fully=False)
+            statement = select(BackgroundTask).where(
+                BackgroundTask.status.in_(["pending", "processing", "failed"]),
+                BackgroundTask.is_uploaded_fully == True
+            )
+            unprocessed_tasks = session.exec(statement).all()
+            
+            requeued_count = 0
+            for task in unprocessed_tasks:
+                # Re-queue the task
+                try:
+                    process_video_task.delay(int(task.id), task.video_path, task.name)
+                    
+                    # Reset status to pending for tasks that were processing or failed
+                    if task.status in ["processing", "failed"]:
+                        task.status = "pending"
+                        task.description = "Re-queued after API restart"
+                        session.add(task)
+                    
+                    requeued_count += 1
+                except Exception as e:
+                    print(f"[STARTUP ERROR]: Failed to re-queue task {task.id}: {str(e)}")
+            
+            if requeued_count > 0:
+                session.commit()
+                print(f"[STARTUP]: Re-queued {requeued_count} unprocessed task(s)")
+            else:
+                print("[STARTUP]: No unprocessed tasks to re-queue")
+    except Exception as e:
+        print(f"[STARTUP ERROR]: Failed to re-queue tasks: {str(e)}")
+    
     yield
 
 
@@ -90,12 +129,12 @@ app.mount("/output", StaticFiles(directory="output"), name="output")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
-
-
 @app.get("/all_tasks", tags=["tasks"])
 def get_all_tasks(session: SessionDep):
     statement = select(BackgroundTask)
     tasks = session.exec(statement).all()
+    # make the id a string
+    tasks = [{"id": str(task.id), "name": task.name, "status": task.status, "description": task.description, "created_at": task.created_at, "updated_at": task.updated_at, "total_upload_size": task.total_upload_size, "uploaded_size": task.uploaded_size, "is_uploaded_fully": task.is_uploaded_fully, "progress": task.progress} for task in tasks]
     return {
         "success": True,
         "data": tasks,
@@ -121,11 +160,18 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
     task_dict = {
         "process_id": task.id,
         "progress": task.progress,
-        "total_steps": task.total_steps,
         "status": task.status,
         "description": task.description,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
+        "total_upload_size": task.total_upload_size,
+        "uploaded_size": task.uploaded_size,
+        "is_uploaded_fully": task.is_uploaded_fully,
+        "upload_progress_percent": (
+            (task.uploaded_size / task.total_upload_size * 100)
+            if task.total_upload_size > 0
+            else 0
+        ),
     }
     return (
         task_dict
@@ -139,9 +185,94 @@ def get_task_progress(process_id: int, session: SessionDep, is_api: bool = True)
 
 @app.post("/process_video", tags=["tasks"])
 async def handle_process_video_request(
-    name: str = Form(...), video_file: UploadFile = File(...)
+    name: str = Form(...),
+    video_file: UploadFile = File(...),
+    total_size: int = Form(int),
+    duplicate_task: bool = Form(False),
+    task_id: Optional[int] = Form(None),
 ) -> ProcessVideoResponse:
-    # Validate file type
+    # Validate duplicate request
+    if duplicate_task and task_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="task_id required when duplicate_task is True",
+        )
+
+    # Handle duplicate task request
+    if duplicate_task and task_id is not None:
+        with Session(Engine.instance()) as session:
+            statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+            existing_task = session.exec(statement).first()
+
+            if not existing_task:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Task with id {task_id} not found",
+                )
+
+            import os
+            os.makedirs("./uploads", exist_ok=True)
+            os.makedirs("./uploads/temp", exist_ok=True)
+            chunk_size = settings.upload_chunk_size
+            file_path = existing_task.video_path
+            file_name = os.path.basename(file_path) if file_path else video_file.filename
+
+            if existing_task.is_uploaded_fully:
+                # Create new task reusing the already-uploaded video; start processing
+                new_task = BackgroundTask(
+                    progress=0.0,
+                    name=name,
+                    status="pending",
+                    video_path=existing_task.video_path,
+                    description=f"Processing video: {name}",
+                    total_upload_size=existing_task.total_upload_size,
+                    uploaded_size=existing_task.total_upload_size,
+                    is_uploaded_fully=True,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                )
+                session.add(new_task)
+                session.commit()
+                session.refresh(new_task)
+                process_video_task.delay(
+                    int(new_task.id), new_task.video_path, new_task.name
+                )
+                return {
+                    "success": True,
+                    "message": "Duplicate task created. Processing started.",
+                    "data": {
+                        "process_id": str(new_task.id),
+                        "filename": video_file.filename,
+                        "name": name,
+                        "file_path": new_task.video_path,
+                        "file_name": file_name,
+                        "total_size": new_task.total_upload_size,
+                        "chunk_size": chunk_size,
+                        "requires_multipart": False,
+                    },
+                }
+            else:
+                # Return existing task for client to resume chunk uploads
+                needs_multipart = (
+                    not existing_task.is_uploaded_fully
+                    and existing_task.total_upload_size >= chunk_size
+                )
+                return {
+                    "success": True,
+                    "message": "Duplicate task found. Using existing task.",
+                    "data": {
+                        "process_id": str(existing_task.id),
+                        "filename": video_file.filename,
+                        "name": existing_task.name,
+                        "file_path": file_path,
+                        "file_name": file_name,
+                        "total_size": existing_task.total_upload_size,
+                        "chunk_size": chunk_size,
+                        "requires_multipart": needs_multipart,
+                    },
+                }
+
+    # Normal flow: validate file type
     if not video_file.content_type.startswith("video/"):
         raise HTTPException(status_code=400, detail="File must be a video")
 
@@ -158,44 +289,380 @@ async def handle_process_video_request(
     import os
 
     os.makedirs("./uploads", exist_ok=True)
+    os.makedirs("./uploads/temp", exist_ok=True)
 
-    # Save the uploaded file
-    with open(file_path, "wb") as buffer:
+    # Determine file size - use total_size parameter if provided, otherwise read file
+    if total_size is None:
+        # Read file to get size
         content = await video_file.read()
-        buffer.write(content)
+        total_size = len(content)
+        # Reset file pointer for saving
+        await video_file.seek(0)
+    else:
+        content = await video_file.read()
 
-    # Generate a process ID
-    process_id = str(uuid.uuid4())
+    # Check if multipart upload is needed
+    chunk_size = settings.upload_chunk_size
+    needs_multipart = total_size >= chunk_size
 
     # Store the process in database
     with Session(Engine.instance()) as session:
-        task = BackgroundTask(
-            progress=0,
-            name=name,
-            status="pending",
-            video_path=file_path,
-            description=f"Processing video: {name}",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
+        if needs_multipart:
+            # For multipart uploads, create task but don't save file yet
+            # Set is_uploaded_fully=False and track upload progress
+            task = BackgroundTask(
+                progress=0.0,
+                name=name,
+                status="uploading",
+                video_path=file_path,
+                description=f"Uploading video: {name}",
+                total_upload_size=total_size,
+                uploaded_size=0,
+                is_uploaded_fully=False,
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            process_id = str(task.id)
+
+            # Create temp directory for chunks
+            temp_dir = f"./uploads/temp/{task.id}"
+            os.makedirs(temp_dir, exist_ok=True)
+
+            # Don't trigger Celery task yet - wait for all chunks
+            return {
+                "success": True,
+                "message": "Task created. Please upload chunks using /upload_chunk/{task_id}",
+                "data": {
+                    "process_id": process_id,
+                    "filename": video_file.filename,
+                    "name": name,
+                    "file_path": file_path,
+                    "file_name": unique_filename,
+                    "total_size": total_size,
+                    "chunk_size": chunk_size,
+                    "requires_multipart": True,
+                },
+            }
+        else:
+            # For small files, upload in one go (existing behavior)
+            with open(file_path, "wb") as buffer:
+                buffer.write(content)
+
+            task = BackgroundTask(
+                progress=0.0,
+                name=name,
+                status="pending",
+                video_path=file_path,
+                description=f"Processing video: {name}",
+                total_upload_size=total_size,
+                uploaded_size=total_size,
+                is_uploaded_fully=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            process_id = str(task.id)
+
+            # Start background processing via Celery
+            process_video_task.delay(int(process_id), file_path, name)
+
+            return {
+                "success": True,
+                "message": "Video uploaded and queued for processing",
+                "data": {
+                    "process_id": process_id,
+                    "filename": video_file.filename,
+                    "name": name,
+                    "file_path": file_path,
+                    "file_name": unique_filename,
+                    "total_size": total_size,
+                    "chunk_size": chunk_size,
+                    "requires_multipart": False,
+                },
+            }
+
+
+@app.post("/upload_chunk/{task_id}", tags=["tasks"])
+async def upload_chunk(
+    task_id: int,
+    session: SessionDep,
+    chunk_number: int = Form(...),
+    chunk_data: UploadFile = File(...),
+    total_chunks: int = Form(None),
+):
+    """Upload a chunk of a multipart file upload."""
+    # Query the task
+    statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+    task = session.exec(statement).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+
+    if task.is_uploaded_fully:
+        raise HTTPException(
+            status_code=400, detail="Task upload already completed. Cannot upload more chunks."
         )
+
+    # Read chunk data
+    chunk_content = await chunk_data.read()
+    chunk_size = len(chunk_content)
+
+    # Create temp directory for chunks if it doesn't exist
+    temp_dir = f"./uploads/temp/{task_id}"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Save chunk to temp directory
+    chunk_path = os.path.join(temp_dir, f"chunk_{chunk_number}.part")
+    
+    # Check if chunk already exists (retry scenario)
+    chunk_already_exists = os.path.exists(chunk_path)
+    
+    # Save chunk file (overwrite if exists)
+    with open(chunk_path, "wb") as f:
+        f.write(chunk_content)
+    
+    # Update uploaded_size only if this is a new chunk
+    if not chunk_already_exists:
+        new_uploaded_size = task.uploaded_size + chunk_size
+        task.uploaded_size = new_uploaded_size
+        task.updated_at = datetime.now()
         session.add(task)
         session.commit()
+    else:
+        # Chunk was retried, don't double-count but refresh to get current size
         session.refresh(task)
-        process_id = str(task.id)
+        new_uploaded_size = task.uploaded_size
 
-    # Start background processing via Celery
-    process_video_task.delay(int(process_id), file_path, name)
+    # Check if all chunks have been received
+    # We check if uploaded_size >= total_upload_size (allowing for small rounding differences)
+    upload_complete = new_uploaded_size >= task.total_upload_size
 
-    return {
-        "success": True,
-        "message": "Video uploaded and queued for processing",
-        "data": {
-            "process_id": process_id,
-            "filename": video_file.filename,
-            "name": name,
-            "file_path": file_path,
-        },
-    }
+    if upload_complete:
+        # Reassemble file from chunks
+        # Get all chunk files and sort by chunk number
+        chunk_files = []
+        for filename in os.listdir(temp_dir):
+            if filename.startswith("chunk_") and filename.endswith(".part"):
+                chunk_num = int(filename.split("_")[1].split(".")[0])
+                chunk_files.append((chunk_num, os.path.join(temp_dir, filename)))
+
+        # Sort by chunk number to ensure correct order
+        chunk_files.sort(key=lambda x: x[0])
+
+        # Reassemble file
+        with open(task.video_path, "wb") as output_file:
+            for chunk_num, chunk_path in chunk_files:
+                with open(chunk_path, "rb") as chunk_file:
+                    output_file.write(chunk_file.read())
+
+        # Clean up temp chunks
+        for chunk_num, chunk_path in chunk_files:
+            try:
+                os.remove(chunk_path)
+            except Exception as e:
+                print(f"[UPLOAD CHUNK WARNING]: Failed to delete chunk {chunk_path}: {str(e)}")
+
+        # Try to remove temp directory
+        try:
+            os.rmdir(temp_dir)
+        except Exception as e:
+            print(f"[UPLOAD CHUNK WARNING]: Failed to remove temp directory {temp_dir}: {str(e)}")
+
+        # Mark upload as complete and trigger processing
+        task.is_uploaded_fully = True
+        task.status = "pending"
+        task.description = f"Upload complete. Processing video: {task.name}"
+        task.updated_at = datetime.now()
+        session.add(task)
+        session.commit()
+
+        # Start background processing via Celery
+        process_video_task.delay(int(task_id), task.video_path, task.name)
+
+        return {
+            "success": True,
+            "message": "All chunks uploaded. Video processing started.",
+            "data": {
+                "task_id": task_id,
+                "uploaded_size": new_uploaded_size,
+                "total_size": task.total_upload_size,
+                "upload_complete": True,
+                "chunks_received": len(chunk_files),
+            },
+        }
+    else:
+        # Upload still in progress
+        progress_percent = (new_uploaded_size / task.total_upload_size) * 100 if task.total_upload_size > 0 else 0
+        return {
+            "success": True,
+            "message": f"Chunk {chunk_number} uploaded successfully",
+            "data": {
+                "task_id": task_id,
+                "chunk_number": chunk_number,
+                "chunk_size": chunk_size,
+                "uploaded_size": new_uploaded_size,
+                "total_size": task.total_upload_size,
+                "upload_complete": False,
+                "progress_percent": round(progress_percent, 2),
+            },
+        }
+
+
+@app.delete("/delete_task/{task_id}", tags=["tasks"])
+def delete_task(task_id: int, session: SessionDep):
+    """Delete a task and all its associated data and files."""
+    # Query the task first
+    statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
+    task = session.exec(statement).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+    
+    files_deleted = []
+    records_deleted = 0
+    
+    try:
+        # 1. Attempt to revoke Celery task if it's pending or processing
+        if task.status in ["pending", "processing"]:
+            try:
+                celery_app = get_celery()
+                inspect = celery_app.control.inspect()
+                
+                # Get active and reserved tasks
+                active_tasks = inspect.active() or {}
+                reserved_tasks = inspect.reserved() or {}
+                
+                # Find and revoke tasks matching this task_id
+                for worker_name, tasks in {**active_tasks, **reserved_tasks}.items():
+                    for celery_task in tasks:
+                        # Check if this is our process_video_task with matching task_id
+                        if celery_task.get("name") == "process_video_task":
+                            args = celery_task.get("args", [])
+                            # args should be [task_id, video_path, name]
+                            if args and len(args) > 0 and args[0] == task_id:
+                                celery_task_id = celery_task.get("id")
+                                if celery_task_id:
+                                    celery_app.control.revoke(celery_task_id, terminate=True)
+                                    print(f"[DELETE TASK]: Revoked Celery task {celery_task_id} for task_id {task_id}")
+            except Exception as e:
+                print(f"[DELETE TASK WARNING]: Failed to revoke Celery task: {str(e)}")
+                # Continue with deletion even if revocation fails
+        
+        # 2. Collect file paths before deleting records
+        file_paths_to_delete = []
+        
+        # Input video from BackgroundTask
+        if task.video_path:
+            # only delete the video if not referenced by any other BackgroundTask
+            video_paths_stmt = select(BackgroundTask).where(BackgroundTask.video_path == task.video_path)
+            video_paths = session.exec(video_paths_stmt).all()
+            if len(video_paths) == 0:
+                file_paths_to_delete.append(task.video_path)
+            else:
+                print(f"[DELETE TASK WARNING]: Video {task.video_path} is referenced by other BackgroundTasks. Not deleting.")
+        
+        # Get VideoPaths if exists
+        video_paths_stmt = select(VideoPaths).where(VideoPaths.task_id == task_id)
+        video_paths = session.exec(video_paths_stmt).first()
+        if video_paths:
+            if video_paths.output_path:
+                file_paths_to_delete.append(video_paths.output_path)
+            if video_paths.minimap_path:
+                file_paths_to_delete.append(video_paths.minimap_path)
+        
+        # Get Thumbnail if exists
+        thumbnail_stmt = select(Thumbnail).where(Thumbnail.task_id == task_id)
+        thumbnail = session.exec(thumbnail_stmt).first()
+        if thumbnail and thumbnail.thumbnail_path:
+            file_paths_to_delete.append(thumbnail.thumbnail_path)
+        
+        # 3. Delete database records
+        # Delete in order: related records first, then main task
+        
+        # Delete VideoPaths
+        if video_paths:
+            session.delete(video_paths)
+            records_deleted += 1
+        
+        # Delete Thumbnail
+        if thumbnail:
+            session.delete(thumbnail)
+            records_deleted += 1
+        
+        # Delete BallTrack
+        ball_track_stmt = select(BallTrack).where(BallTrack.task_id == task_id)
+        ball_track = session.exec(ball_track_stmt).first()
+        if ball_track:
+            session.delete(ball_track)
+            records_deleted += 1
+        
+        # Delete Bounces
+        bounces_stmt = select(Bounces).where(Bounces.task_id == task_id)
+        bounces = session.exec(bounces_stmt).first()
+        if bounces:
+            session.delete(bounces)
+            records_deleted += 1
+        
+        # Delete DirectionChangeIndices
+        direction_change_stmt = select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)
+        direction_change = session.exec(direction_change_stmt).first()
+        if direction_change:
+            session.delete(direction_change)
+            records_deleted += 1
+        
+        # Delete Speed
+        speed_stmt = select(Speed).where(Speed.task_id == task_id)
+        speed = session.exec(speed_stmt).first()
+        if speed:
+            session.delete(speed)
+            records_deleted += 1
+        
+        # Delete PlayerPositions
+        player_positions_stmt = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
+        player_positions = session.exec(player_positions_stmt).first()
+        if player_positions:
+            session.delete(player_positions)
+            records_deleted += 1
+        
+        # Delete main BackgroundTask
+        session.delete(task)
+        records_deleted += 1
+        
+        # Commit all database deletions
+        session.commit()
+        
+        # 4. Delete files
+        for file_path in file_paths_to_delete:
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    files_deleted.append(file_path)
+                    print(f"[DELETE TASK]: Deleted file {file_path}")
+            except Exception as e:
+                print(f"[DELETE TASK WARNING]: Failed to delete file {file_path}: {str(e)}")
+                # Continue with other files even if one fails
+        
+        return {
+            "success": True,
+            "message": f"Task {task_id} deleted successfully",
+            "data": {
+                "task_id": str(task_id),
+                "files_deleted": files_deleted,
+                "records_deleted": records_deleted,
+            },
+        }
+    
+    except Exception as e:
+        # Rollback on error
+        session.rollback()
+        error_msg = f"Error deleting task {task_id}: {str(e)}"
+        print(f"[DELETE TASK ERROR]: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/get_video_paths/{task_id}", tags=["stats"])
@@ -343,6 +810,35 @@ async def get_direction_change_indices_api(
     )
 
 
+@app.get("/get_player_positions/{task_id}", tags=["stats"])
+async def get_player_positions(
+    task_id: int, session: SessionDep, is_api: bool = True
+) -> object:
+    statement = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
+    player_positions = session.exec(statement).first()
+    if player_positions is None:
+        return (
+            None
+            if not is_api
+            else {
+                "success": True,
+                "message": "Player positions not found",
+            }
+        )
+
+    player_positions.positions = json.loads(player_positions.positions)
+
+    player_positions_dict = PlayerPositionsSchema.model_validate(player_positions).model_dump()
+    return (
+        player_positions_dict
+        if not is_api
+        else {
+            "success": True,
+            "data": player_positions_dict,
+        }
+    )
+
+
 @app.get("/thumbnail/{task_id}", tags=["stats"])
 async def get_thumbnail(
     task_id: int, session: SessionDep, is_api: bool = True
@@ -360,6 +856,8 @@ async def get_thumbnail(
         )
 
     thumbnail_dict = ThumbnailSchema.model_validate(thumbnail).model_dump()
+    # make the id a string
+    thumbnail_dict = {"id": str(thumbnail.id), "thumbnail_path": thumbnail.thumbnail_path, "created_at": thumbnail.created_at, "updated_at": thumbnail.updated_at}
     return (
         thumbnail_dict
         if not is_api
@@ -379,6 +877,7 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
     direction_change_indices = await get_direction_change_indices_api(
         task_id, session, is_api=False
     )
+    player_positions = await get_player_positions(task_id, session, is_api=False)
     thumbnail = await get_thumbnail(task_id, session, is_api=False)
     progress = get_task_progress(task_id, session, is_api=False)
 
@@ -390,6 +889,7 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
             "ball_track": ball_track,
             "bounces": bounces,
             "direction_change_indices": direction_change_indices,
+            "player_positions": player_positions,
             "thumbnail": thumbnail,
         },
         "progress": progress,

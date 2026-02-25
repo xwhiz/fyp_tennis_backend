@@ -35,11 +35,21 @@ class BallDetector:
             imgs = np.rollaxis(imgs, 2, 0)
             inp = np.expand_dims(imgs, axis=0)
 
-            out = self.model(torch.from_numpy(inp).float().to(self.device))
+            inp_tensor = torch.from_numpy(inp).float().to(self.device)
+            out = self.model(inp_tensor)
             output = out.argmax(dim=1).detach().cpu().numpy()
+            
+            # Clean up GPU tensors immediately
+            del inp_tensor, out
+            if self.device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             x_pred, y_pred = self.postprocess(output, prev_pred)
             prev_pred = [x_pred, y_pred]
             ball_track.append((x_pred, y_pred))
+            
+            # Clean up intermediate arrays (after postprocess is done)
+            del img, img_prev, img_preprev, imgs, inp, output
         return ball_track
 
     def postprocess(self, feature_map, prev_pred, scale=2, max_dist=80):

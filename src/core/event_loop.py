@@ -48,7 +48,7 @@ class EventLoop:
                 process_video(self.app, task["video_path"], task["id"], task["name"])
             except Exception as e:
                 print(f"Error processing video {task['id']}: {str(e)}")
-                update_task_status(task["id"], "failed", 0, "Error processing video")
+                update_task_status(task["id"], "failed", 0.0, "Error processing video")
 
     def stop(self):
         self.is_running = False
