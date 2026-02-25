@@ -565,6 +565,24 @@ def process_video(
                 thickness=50,
             )
 
+        # Draw player positions on minimap
+        inv_mat = homography_matrices[i]
+        if inv_mat is not None:
+            for player, color in [
+                (player_top[i], (0, 0, 255)),
+                (player_bottom[i], (255, 0, 0)),
+            ]:
+                if player is not None:
+                    foot_point = np.array(player[1], dtype=np.float32).reshape(1, 1, 2)
+                    court_point = cv2.perspectiveTransform(foot_point, inv_mat)
+                    minimap_frame = cv2.circle(
+                        minimap_frame,
+                        (int(court_point[0, 0, 0]), int(court_point[0, 0, 1])),
+                        radius=0,
+                        color=color,
+                        thickness=60,
+                    )
+
         # Resize minimap and add to frame
         minimap_resized = cv2.resize(minimap_frame, (width_minimap, height_minimap))
         height, width = frame.shape[:2]
