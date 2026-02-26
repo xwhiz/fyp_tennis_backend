@@ -66,6 +66,54 @@ def compress_frame(frame: np.ndarray, quality: int = 80):
     return None if not ret else buffer
 
 
+def classify_serve_type(bounce_x: float, bounce_y: float) -> str:
+    """
+    Classify a serve based on where the ball lands in court coordinates.
+
+    Service box geometry (from CourtReference):
+      Top box:    x in [423, 1242], y in [1110, 1748]
+      Bottom box: x in [423, 1242], y in [1748, 2386]
+      Center line: x = 832
+
+    Zones (by normalized distance from center line within the half-box):
+      T Serve:    < 0.33  (near center T)
+      Body Serve: 0.33 - 0.67  (middle zone)
+      Wide Serve: > 0.67  (near outer sideline)
+    """
+    # Service box boundaries
+    service_x_min = 423
+    service_x_max = 1242
+    center_x = 832
+    top_service_y_min = 1110
+    top_service_y_max = 1748  # net
+    bottom_service_y_min = 1748  # net
+    bottom_service_y_max = 2386
+
+    # Check if the bounce is in a service box
+    in_top_box = (service_x_min <= bounce_x <= service_x_max and
+                  top_service_y_min <= bounce_y <= top_service_y_max)
+    in_bottom_box = (service_x_min <= bounce_x <= service_x_max and
+                     bottom_service_y_min <= bounce_y <= bottom_service_y_max)
+
+    if not in_top_box and not in_bottom_box:
+        return "unknown"
+
+    # Determine which half-box the ball is in and compute normalized distance from center
+    if bounce_x < center_x:
+        half_box_width = center_x - service_x_min  # 409
+    else:
+        half_box_width = service_x_max - center_x  # 410
+
+    normalized_dist = abs(bounce_x - center_x) / half_box_width
+
+    if normalized_dist < 0.33:
+        return "t_serve"
+    elif normalized_dist > 0.67:
+        return "wide_serve"
+    else:
+        return "body_serve"
+
+
 def check_court_in_scene(court_detector, video_path, start_frame, end_frame, num_samples=5):
     """
     Sample random frames from a scene range, run court detection on each.
