@@ -114,6 +114,56 @@ def classify_serve_type(bounce_x: float, bounce_y: float) -> str:
         return "body_serve"
 
 
+def generate_player_heatmap(court_points: list[tuple[float, float]], alpha: float = 0.6) -> np.ndarray:
+    """
+    Generate a heatmap image of player positions overlaid on the court reference.
+
+    Args:
+        court_points: List of (x, y) positions in court coordinates.
+        alpha: Blend factor for the heatmap overlay (0 = court only, 1 = heatmap only).
+
+    Returns:
+        BGR image with the heatmap blended onto the court reference.
+    """
+    court_img = get_court_img()
+    h, w = court_img.shape[:2]
+
+    if not court_points:
+        return court_img
+
+    # Accumulate points on a blank canvas
+    accumulator = np.zeros((h, w), dtype=np.float32)
+    for x, y in court_points:
+        ix, iy = int(round(x)), int(round(y))
+        if 0 <= ix < w and 0 <= iy < h:
+            cv2.circle(accumulator, (ix, iy), 15, 1.0, -1)
+
+    # Smooth into a heatmap
+    accumulator = cv2.GaussianBlur(accumulator, (0, 0), sigmaX=25, sigmaY=25)
+
+    # Normalize to 0-255
+    max_val = accumulator.max()
+    if max_val > 0:
+        accumulator = (accumulator / max_val * 255).astype(np.uint8)
+    else:
+        accumulator = accumulator.astype(np.uint8)
+
+    # Apply colormap
+    heatmap_colored = cv2.applyColorMap(accumulator, cv2.COLORMAP_JET)
+
+    # Create a mask so we only overlay where there is actual heat
+    mask = (accumulator > 5).astype(np.float32)
+    mask_3ch = np.stack([mask, mask, mask], axis=2)
+
+    # Blend: where there is heat, mix heatmap + court; elsewhere, keep court
+    blended = (
+        court_img.astype(np.float32) * (1 - mask_3ch * alpha)
+        + heatmap_colored.astype(np.float32) * mask_3ch * alpha
+    ).astype(np.uint8)
+
+    return blended
+
+
 def check_court_in_scene(court_detector, video_path, start_frame, end_frame, num_samples=5):
     """
     Sample random frames from a scene range, run court detection on each.

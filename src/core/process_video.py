@@ -13,6 +13,7 @@ from tqdm import tqdm
 from src.core.get_direction_change_indices import get_direction_change_indices
 from src.core.utils import (
     check_court_in_scene,
+    generate_player_heatmap,
     get_court_img,
     perspective_transform_point,
     scene_detect,
@@ -732,6 +733,37 @@ def process_video(
     
     # Release video capture
     input_video_capture.release()
+
+    # Generate player heatmaps
+    print("[INFO]: Generating player heatmaps")
+    top_court_points = []
+    bottom_court_points = []
+    for i in range(len(player_top)):
+        inv_mat = homography_matrices[i]
+        if inv_mat is None:
+            continue
+        for player_data, points_list in [
+            (player_top[i], top_court_points),
+            (player_bottom[i], bottom_court_points),
+        ]:
+            if player_data is not None:
+                try:
+                    foot_point = np.array(player_data[1], dtype=np.float32).reshape(1, 1, 2)
+                    court_point = cv2.perspectiveTransform(foot_point, inv_mat)
+                    points_list.append((float(court_point[0, 0, 0]), float(court_point[0, 0, 1])))
+                except cv2.error:
+                    continue
+
+    heatmap_top_path = f"output/output_{task_id}_{time.time()}_heatmap_top.png"
+    heatmap_bottom_path = f"output/output_{task_id}_{time.time()}_heatmap_bottom.png"
+
+    heatmap_top = generate_player_heatmap(top_court_points)
+    heatmap_bottom = generate_player_heatmap(bottom_court_points)
+    cv2.imwrite(heatmap_top_path, heatmap_top)
+    cv2.imwrite(heatmap_bottom_path, heatmap_bottom)
+    print(f"[INFO]: Heatmaps saved ({len(top_court_points)} top pts, {len(bottom_court_points)} bottom pts)")
+
+    cleanup_memory(device)
 
     save_video_paths_in_db(task_id, name, output_path, minimap_path)
     update_task_status(task_id, "completed", round(1.0, 3), "Video processed successfully")
