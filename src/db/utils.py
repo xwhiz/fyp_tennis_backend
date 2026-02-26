@@ -70,8 +70,13 @@ def save_ball_track_in_db(task_id: int, ball_track: list):
         session.commit()
 
 
-def save_bounces_in_db(task_id: int, bounces: dict):
-    processed_bounces = {k: to_float(v) for k, v in bounces.items()}
+def save_bounces_in_db(task_id: int, bounces: dict, serve_frames: set = None):
+    if serve_frames is None:
+        serve_frames = set()
+    processed_bounces = {
+        k: {"position": to_float(v), "serve": k in serve_frames}
+        for k, v in bounces.items()
+    }
 
     with Session(Engine.instance()) as session:
         session.add(Bounces(task_id=task_id, bounces=json.dumps(processed_bounces)))

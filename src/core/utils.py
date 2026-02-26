@@ -1,3 +1,5 @@
+import random
+
 from scenedetect.video_manager import VideoManager
 from scenedetect.scene_manager import SceneManager
 from scenedetect.stats_manager import StatsManager
@@ -62,3 +64,25 @@ def get_slope(values: list[float]) -> float:
 def compress_frame(frame: np.ndarray, quality: int = 80):
     ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return None if not ret else buffer
+
+
+def check_court_in_scene(court_detector, video_path, start_frame, end_frame, num_samples=5):
+    """
+    Sample random frames from a scene range, run court detection on each.
+    Return True if a court is detected in at least 2 of the sampled frames.
+    """
+    cap = cv2.VideoCapture(video_path)
+    frame_range = range(start_frame, end_frame)
+    sample_count = min(num_samples, end_frame - start_frame)
+    indices = sorted(random.sample(frame_range, sample_count))
+    detections = 0
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        matrices, _ = court_detector.infer_model([frame])
+        if matrices[0] is not None:
+            detections += 1
+    cap.release()
+    return detections >= 2

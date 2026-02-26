@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from src.core.get_direction_change_indices import get_direction_change_indices
 from src.core.utils import (
+    check_court_in_scene,
     get_court_img,
     perspective_transform_point,
     scene_detect,
@@ -41,6 +42,21 @@ def cleanup_memory(device):
     if device == "cuda" and torch.cuda.is_available():
         torch.cuda.empty_cache()
     gc.collect()
+
+
+def get_valid_scenes(court_detector, video_path, scenes):
+    """
+    Filter scenes to only those containing a tennis court.
+    Returns list of valid [start, end] scene ranges.
+    """
+    valid_scenes = []
+    for start, end in scenes:
+        if check_court_in_scene(court_detector, video_path, start, end):
+            valid_scenes.append([start, end])
+            print(f"[INFO]: Scene [{start}, {end}] - court detected (valid)")
+        else:
+            print(f"[INFO]: Scene [{start}, {end}] - no court (skipped)")
+    return valid_scenes
 
 
 def get_detections_from_frames(ball_detector, court_detector, person_detector, frames, task_id=None, current_frame=0, total_frames=1):
@@ -132,12 +148,21 @@ def get_detections_from_video(
     task_id: int,
     video_path: str,
     cap=None,
+    valid_scenes=None,
 ):
     ball_track = []
     homography_matrices = []
     kps_court = []
     player_top = []
     player_bottom = []
+    
+    # Build set of valid frame indices for O(1) lookup
+    valid_frame_set = None
+    if valid_scenes is not None:
+        valid_frame_set = set()
+        for start, end in valid_scenes:
+            valid_frame_set.update(range(start, end))
+        print(f"[INFO]: {len(valid_frame_set)} valid frames out of total (scene filtering enabled)")
     
     # Reuse provided video capture or create new one
     should_release_cap = False
@@ -162,11 +187,22 @@ def get_detections_from_video(
     
     frames = []
     batch_count = 0
+    # Track how many valid frames we've processed so far (for progress reporting)
+    valid_frames_processed = 0
     
     for i in tqdm(range(total_frames)):
         ret, frame = cap.read()
         if not ret:
             break
+
+        # Skip non-game frames: append placeholders without running detectors
+        if valid_frame_set is not None and i not in valid_frame_set:
+            ball_track.append((None, None))
+            homography_matrices.append(None)
+            kps_court.append(None)
+            player_top.append(None)
+            player_bottom.append(None)
+            continue
 
         frames.append(frame)
 
@@ -354,6 +390,12 @@ def process_video(
     thumbnail_index = max_diff[0]
     thumbnail_path = f"output/output_{task_id}_thumbnail_{time.time()}.jpg"
 
+    update_task_status(task_id, "processing", round(0.05, 3), "Filtering scenes by court detection")
+
+    # Filter scenes to only those containing a tennis court
+    valid_scenes = get_valid_scenes(court_detector, video_path, scenes)
+    print(f"[INFO]: {len(valid_scenes)} valid scenes out of {len(scenes)} total")
+
     update_task_status(task_id, "processing", round(0.1, 3), "Loading video")
 
     input_video_capture = cv2.VideoCapture(video_path)
@@ -375,6 +417,7 @@ def process_video(
             task_id,
             video_path,
             cap=input_video_capture,  # Reuse the capture object
+            valid_scenes=valid_scenes,
         )
     )
     
@@ -396,8 +439,20 @@ def process_video(
     # Memory cleanup after transformation
     cleanup_memory(device)
 
+    # Mark serves: first bounce in each valid scene is a serve
+    serve_frames = set()
+    scene_starts = {s[0] for s in valid_scenes}
+    for bounce_index in sorted(bounces):
+        for scene_start, scene_end in valid_scenes:
+            if scene_start <= bounce_index < scene_end:
+                if scene_start in scene_starts:
+                    serve_frames.add(bounce_index)
+                    scene_starts.discard(scene_start)
+                break
+    print(f"[INFO]: {len(serve_frames)} serves detected at frames: {sorted(serve_frames)}")
+
     save_ball_track_in_db(task_id, transformed_track)
-    save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces})
+    save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces}, serve_frames)
     save_player_positions_in_db(task_id, player_top, player_bottom)
     
     # Clean up after saving to DB
@@ -492,6 +547,11 @@ def process_video(
 
     update_task_status(task_id, "processing", round(0.95, 3), "Creating annotated video")
     
+    # Build valid frame set for output loop passthrough
+    valid_frame_set = set()
+    for start, end in valid_scenes:
+        valid_frame_set.update(range(start, end))
+
     # Reset video capture to beginning for output generation
     input_video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
@@ -508,6 +568,11 @@ def process_video(
         if i == thumbnail_index:
             cv2.imwrite(thumbnail_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             save_thumbnail_in_db(task_id, thumbnail_path)
+
+        # Non-game frames: passthrough without annotations
+        if i not in valid_frame_set:
+            output_video_writer.write(frame)
+            continue
 
         # Draw ball on main frame
         if ball_track[i][0] is not None:
