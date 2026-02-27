@@ -222,3 +222,5 @@ __marimo__/
 *.db
 
 chunk_*.part
+
+/output
