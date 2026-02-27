@@ -100,11 +100,11 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
             # Check if matrix has correct shape (3x3 for homography)
             if batch_matrix.shape == (3, 3):
                 try:
-                    filter_matrix = cv2.invert(batch_matrix)[1]  # court_ref -> image
+                    # filter_matrix = cv2.invert(batch_matrix)[1]  # court_ref -> image
                     top_player, bottom_player = person_detector.filter_players(
                         batch_players_top_unfiltered[i],
                         batch_players_bottom_unfiltered[i],
-                        filter_matrix,
+                        batch_matrix,
                     )
                 except cv2.error:
                     # If perspectiveTransform fails, use unfiltered results
