@@ -38,7 +38,7 @@ from src.core.stream_infer import (
     court_detector_stream_infer,
     get_ball_track_and_bounces_stream_infer,
 )
-from src.core.utils import get_court_img, perspective_transform_point, scene_detect
+from src.core.utils import classify_serve_type, get_court_img, perspective_transform_point, scene_detect
 from src.db.engine import Engine
 from src.db.utils import (
     save_ball_track_in_db,
@@ -893,6 +893,109 @@ async def get_all_stats(task_id: int, session: SessionDep) -> object:
             "thumbnail": thumbnail,
         },
         "progress": progress,
+    }
+
+
+@app.get("/serve_stats/{task_id}", tags=["stats"])
+async def get_serve_stats(task_id: int, session: SessionDep) -> object:
+    # 1. Load bounces
+    bounces_row = session.exec(
+        select(Bounces).where(Bounces.task_id == task_id)
+    ).first()
+    if bounces_row is None:
+        return {"success": True, "message": "Bounces not found", "data": {"serves": []}}
+    bounces_data = json.loads(bounces_row.bounces)
+
+    # 2. Load direction change indices
+    dci_row = session.exec(
+        select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)
+    ).first()
+    if dci_row is None:
+        return {"success": True, "message": "Direction change indices not found", "data": {"serves": []}}
+    dci_data = json.loads(dci_row.direction_change_indices)
+    dc_frames_sorted = sorted(int(k) for k in dci_data.keys())
+
+    # 3. Load ball track
+    ball_track_row = session.exec(
+        select(BallTrack).where(BallTrack.task_id == task_id)
+    ).first()
+    if ball_track_row is None:
+        return {"success": True, "message": "Ball track not found", "data": {"serves": []}}
+    ball_track_data = json.loads(ball_track_row.ball_track)
+
+    # 4. Find serve bounces and build response
+    serves = []
+    for frame_str, bounce_info in bounces_data.items():
+        if not bounce_info.get("serve", False):
+            continue
+
+        bounce_frame = int(frame_str)
+        bounce_position = bounce_info["position"]
+
+        # Find the last direction change frame before this bounce
+        origin_frame = None
+        for dc_frame in reversed(dc_frames_sorted):
+            if dc_frame < bounce_frame:
+                origin_frame = dc_frame
+                break
+
+        if origin_frame is None:
+            continue
+
+        # Look up origin position from ball_track (court coordinates)
+        origin_position = ball_track_data.get(str(origin_frame))
+        if origin_position is None:
+            continue
+
+        # Collect ball track from origin to bounce (inclusive)
+        track_segment = []
+        for f in range(origin_frame, bounce_frame + 1):
+            point = ball_track_data.get(str(f))
+            if point is not None:
+                track_segment.append(point)
+
+        # Classify serve type
+        serve_type = "unknown"
+        if bounce_position and bounce_position[0] is not None and bounce_position[1] is not None:
+            serve_type = classify_serve_type(bounce_position[0], bounce_position[1])
+
+        serves.append({
+            "bounce_frame": bounce_frame,
+            "bounce_position": bounce_position,
+            "origin_frame": origin_frame,
+            "origin_position": origin_position,
+            "ball_track": track_segment,
+            "serve_type": serve_type,
+        })
+
+    # Sort by bounce frame
+    serves.sort(key=lambda s: s["bounce_frame"])
+
+    return {
+        "success": True,
+        "data": {"serves": serves},
+    }
+
+
+@app.get("/player_heatmaps/{task_id}", tags=["stats"])
+async def get_player_heatmaps(task_id: int) -> object:
+    heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
+    heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
+
+    # If heatmaps don't exist, generate empty court reference PNGs as fallback
+    if not os.path.exists(heatmap_top_path) or not os.path.exists(heatmap_bottom_path):
+        court_img = get_court_img()
+        if not os.path.exists(heatmap_top_path):
+            cv2.imwrite(heatmap_top_path, court_img)
+        if not os.path.exists(heatmap_bottom_path):
+            cv2.imwrite(heatmap_bottom_path, court_img)
+
+    return {
+        "success": True,
+        "data": {
+            "player_top_heatmap": f"/output/output_{task_id}_heatmap_top.png",
+            "player_bottom_heatmap": f"/output/output_{task_id}_heatmap_bottom.png",
+        },
     }
 
 
