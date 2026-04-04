@@ -38,11 +38,18 @@ from src.core.stream_infer import (
     court_detector_stream_infer,
     get_ball_track_and_bounces_stream_infer,
 )
-from src.core.utils import classify_serve_type, get_court_img, perspective_transform_point, scene_detect
+from src.core.utils import (
+    classify_serve_type,
+    generate_player_heatmap,
+    get_court_img,
+    perspective_transform_point,
+    scene_detect,
+)
 from src.db.engine import Engine
 from src.db.utils import (
     save_ball_track_in_db,
     save_direction_change_indices_in_db,
+    save_heatmap_data_in_db,
     save_speed_in_db,
     save_video_paths_in_db,
     update_upload_progress,
@@ -51,6 +58,8 @@ from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
+from src.models.homography_matrices import HomographyMatrices
+from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.player_positions import PlayerPositions
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.db.utils import update_task_status, SessionDep
@@ -989,6 +998,79 @@ async def get_player_heatmaps(task_id: int) -> object:
             cv2.imwrite(heatmap_top_path, court_img)
         if not os.path.exists(heatmap_bottom_path):
             cv2.imwrite(heatmap_bottom_path, court_img)
+
+    return {
+        "success": True,
+        "data": {
+            "player_top_heatmap": f"/output/output_{task_id}_heatmap_top.png",
+            "player_bottom_heatmap": f"/output/output_{task_id}_heatmap_bottom.png",
+        },
+    }
+
+
+def _foot_from_bbox(bbox):
+    """Derive foot point (center-x, bottom-y) from bbox [x0, y0, x1, y1]."""
+    if not bbox or len(bbox) < 4:
+        return None
+    return ((float(bbox[0]) + float(bbox[2])) / 2, float(bbox[3]))
+
+
+@app.post("/player_heatmaps/{task_id}/recreate", tags=["stats"])
+async def recreate_player_heatmaps(task_id: int, session: SessionDep) -> object:
+    """Redraw both player heatmap PNGs. Uses stored court points if present; else derives from player positions + homography."""
+    heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
+    heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
+
+    # 1. Try stored heatmap court points
+    heatmap_row = session.exec(select(PlayerHeatmapData).where(PlayerHeatmapData.task_id == task_id)).first()
+    if heatmap_row is not None:
+        top_points = heatmap_row.top_points if isinstance(heatmap_row.top_points, list) else json.loads(heatmap_row.top_points)
+        bottom_points = heatmap_row.bottom_points if isinstance(heatmap_row.bottom_points, list) else json.loads(heatmap_row.bottom_points)
+        top_tuples = [tuple(p) for p in top_points]
+        bottom_tuples = [tuple(p) for p in bottom_points]
+    else:
+        # 2. Fallback: derive from player positions + homography
+        pos_row = session.exec(select(PlayerPositions).where(PlayerPositions.task_id == task_id)).first()
+        hom_row = session.exec(select(HomographyMatrices).where(HomographyMatrices.task_id == task_id)).first()
+        if pos_row is None or hom_row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Heatmap data not found; need processed video with player positions and court detection.",
+            )
+        positions = pos_row.positions if isinstance(pos_row.positions, dict) else json.loads(pos_row.positions)
+        matrices = hom_row.matrices if isinstance(hom_row.matrices, list) else json.loads(hom_row.matrices)
+        n = min(len(positions), len(matrices))
+        top_court_points = []
+        bottom_court_points = []
+        for i in range(n):
+            H = matrices[i]
+            if H is None:
+                continue
+            H = np.array(H, dtype=np.float32)
+            frame_pos = positions.get(str(i))
+            if not frame_pos:
+                continue
+            for key, points_list in [("top", top_court_points), ("bottom", bottom_court_points)]:
+                bbox = frame_pos.get(key)
+                foot = _foot_from_bbox(bbox)
+                if foot is None:
+                    continue
+                try:
+                    pt = np.array([[foot]], dtype=np.float32)
+                    court_pt = cv2.perspectiveTransform(pt, H)
+                    points_list.append((float(court_pt[0, 0, 0]), float(court_pt[0, 0, 1])))
+                except Exception:
+                    continue
+        top_tuples = top_court_points
+        bottom_tuples = bottom_court_points
+        # Optionally persist so next recreate uses fast path
+        if top_tuples or bottom_tuples:
+            save_heatmap_data_in_db(task_id, top_tuples, bottom_tuples)
+
+    heatmap_top = generate_player_heatmap(top_tuples)
+    heatmap_bottom = generate_player_heatmap(bottom_tuples)
+    cv2.imwrite(heatmap_top_path, heatmap_top)
+    cv2.imwrite(heatmap_bottom_path, heatmap_bottom)
 
     return {
         "success": True,
