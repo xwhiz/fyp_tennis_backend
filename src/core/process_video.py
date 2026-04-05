@@ -78,9 +78,11 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
         update_task_status(task_id, "processing", progress, "Detecting court")
     
     # Step 3: Person detection (takes ~20% of batch time)
+    # Keep player coordinates in the same 1280x720 space used later for overlays.
+    resized_frames_for_players = [cv2.resize(frame, (1280, 720)) for frame in frames]
     batch_players_top_unfiltered, batch_players_bottom_unfiltered = (
         person_detector.track_players(
-            frames, batch_homography_matrices, filter_players=False
+            resized_frames_for_players, batch_homography_matrices, filter_players=False
         )
     )
     if task_id is not None:
@@ -125,6 +127,7 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
             batch_players_bottom.append(None)
     
     # Clean up intermediate results
+    del resized_frames_for_players
     del batch_players_top_unfiltered, batch_players_bottom_unfiltered
     
     # Step 4: Filtering complete (100% of batch)
