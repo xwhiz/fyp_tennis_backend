@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import mimetypes
 import os
@@ -979,22 +980,31 @@ async def get_serve_stats(task_id: int, session: SessionDep) -> object:
 
 @app.get("/player_heatmaps/{task_id}", tags=["stats"])
 async def get_player_heatmaps(task_id: int) -> object:
-    heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
-    heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
 
-    # If heatmaps don't exist, generate empty court reference PNGs as fallback
-    if not os.path.exists(heatmap_top_path) or not os.path.exists(heatmap_bottom_path):
-        court_img = get_court_img()
-        if not os.path.exists(heatmap_top_path):
-            cv2.imwrite(heatmap_top_path, court_img)
-        if not os.path.exists(heatmap_bottom_path):
-            cv2.imwrite(heatmap_bottom_path, court_img)
+    heatmap_top_path = f"output/output_{task_id}_*_heatmap_top.png"
+    heatmap_bottom_path = f"output/output_{task_id}_*_heatmap_bottom.png"
+
+    # Find the latest heatmap files
+    heatmap_top_files = glob.glob(heatmap_top_path)
+    heatmap_bottom_files = glob.glob(heatmap_bottom_path)
+    if len(heatmap_top_files) == 0 or len(heatmap_bottom_files) == 0:
+        return {
+            "success": True,
+            "data": {
+                "player_top_heatmap": None,
+                "player_bottom_heatmap": None,
+            },
+        }
+
+    # Get the latest heatmap files
+    heatmap_top_file = max(heatmap_top_files, key=os.path.getctime)
+    heatmap_bottom_file = max(heatmap_bottom_files, key=os.path.getctime)
 
     return {
         "success": True,
         "data": {
-            "player_top_heatmap": f"/output/output_{task_id}_heatmap_top.png",
-            "player_bottom_heatmap": f"/output/output_{task_id}_heatmap_bottom.png",
+            "player_top_heatmap": f"/{heatmap_top_file}",
+            "player_bottom_heatmap": f"/{heatmap_bottom_file}",
         },
     }
 
