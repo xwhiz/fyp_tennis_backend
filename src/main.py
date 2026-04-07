@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
             # Query for tasks that need to be re-queued
             # Exclude tasks that are not fully uploaded (is_uploaded_fully=False)
             statement = select(BackgroundTask).where(
-                BackgroundTask.status.in_(["pending", "processing", "failed"]),
+                BackgroundTask.status.in_(["pending", "processing"]),
                 BackgroundTask.is_uploaded_fully == True
             )
             unprocessed_tasks = session.exec(statement).all()
@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
                     process_video_task.delay(int(task.id), task.video_path, task.name)
                     
                     # Reset status to pending for tasks that were processing or failed
-                    if task.status in ["processing", "failed"]:
+                    if task.status in ["processing"]:
                         task.status = "pending"
                         task.description = "Re-queued after API restart"
                         session.add(task)
