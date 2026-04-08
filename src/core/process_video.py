@@ -22,6 +22,8 @@ from src.db.utils import (
     save_ball_track_in_db,
     save_bounces_in_db,
     save_direction_change_indices_in_db,
+    save_heatmap_data_in_db,
+    save_homography_matrices_in_db,
     save_player_positions_in_db,
     save_speed_in_db,
     save_thumbnail_in_db,
@@ -774,12 +776,15 @@ def process_video(
 
     heatmap_top_path = f"output/output_{task_suffix}_{time.time()}_heatmap_top.png"
     heatmap_bottom_path = f"output/output_{task_suffix}_{time.time()}_heatmap_bottom.png"
-
+    save_heatmap_data_in_db(task_id, top_court_points, bottom_court_points)
+    
     heatmap_top = generate_player_heatmap(top_court_points)
     heatmap_bottom = generate_player_heatmap(bottom_court_points)
     cv2.imwrite(heatmap_top_path, heatmap_top)
     cv2.imwrite(heatmap_bottom_path, heatmap_bottom)
     print(f"[INFO]: Heatmaps saved ({len(top_court_points)} top pts, {len(bottom_court_points)} bottom pts)")
+
+    save_homography_matrices_in_db(task_id, homography_matrices)
 
     cleanup_memory(device)
 

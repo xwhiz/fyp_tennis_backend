@@ -8,6 +8,8 @@ from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
+from src.models.homography_matrices import HomographyMatrices
+from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.speed import Speed
 from src.models.player_positions import PlayerPositions
 from src.models.thumbnail import Thumbnail
@@ -116,6 +118,54 @@ def save_video_paths_in_db(
                 minimap_path=minimap_path,
             )
         )
+        session.commit()
+
+
+def save_heatmap_data_in_db(
+    task_id: int,
+    top_court_points: list,
+    bottom_court_points: list,
+):
+    """Upsert court-space points for player heatmaps (one row per task)."""
+    top_json = [[float(x), float(y)] for x, y in top_court_points]
+    bottom_json = [[float(x), float(y)] for x, y in bottom_court_points]
+    with Session(Engine.instance()) as session:
+        existing = session.exec(
+            select(PlayerHeatmapData).where(PlayerHeatmapData.task_id == task_id)
+        ).first()
+        if existing:
+            existing.top_points = top_json
+            existing.bottom_points = bottom_json
+            session.add(existing)
+        else:
+            session.add(
+                PlayerHeatmapData(
+                    task_id=task_id,
+                    top_points=top_json,
+                    bottom_points=bottom_json,
+                )
+            )
+        session.commit()
+
+
+def save_homography_matrices_in_db(task_id: int, homography_matrices: list):
+    """Upsert per-frame homography (image->court). Each element is 3x3 array or None."""
+    def to_json(m):
+        if m is None:
+            return None
+        return [[float(x) for x in row] for row in m.tolist()]
+    matrices_json = [to_json(m) for m in homography_matrices]
+    with Session(Engine.instance()) as session:
+        existing = session.exec(
+            select(HomographyMatrices).where(HomographyMatrices.task_id == task_id)
+        ).first()
+        if existing:
+            existing.matrices = matrices_json
+            session.add(existing)
+        else:
+            session.add(
+                HomographyMatrices(task_id=task_id, matrices=matrices_json)
+            )
         session.commit()
 
 
