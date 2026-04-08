@@ -6,7 +6,7 @@ from collections import defaultdict
 import cv2
 import numpy as np
 import torch
-from typing import Literal
+from typing import Literal, Optional
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
 
@@ -69,23 +69,25 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
     
     # Step 1: Ball detection (takes ~40% of batch time)
     batch_ball_track = ball_detector.infer_model(frames)
-    if task_id:
+    if task_id is not None:
         progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.4, 3)
         update_task_status(task_id, "processing", progress, "Detecting ball track")
     
     # Step 2: Court detection (takes ~30% of batch time)
     batch_homography_matrices, batch_kps_court = court_detector.infer_model(frames)
-    if task_id:
+    if task_id is not None:
         progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.7, 3)
         update_task_status(task_id, "processing", progress, "Detecting court")
     
     # Step 3: Person detection (takes ~20% of batch time)
+    # Keep player coordinates in the same 1280x720 space used later for overlays.
+    resized_frames_for_players = [cv2.resize(frame, (1280, 720)) for frame in frames]
     batch_players_top_unfiltered, batch_players_bottom_unfiltered = (
         person_detector.track_players(
-            frames, batch_homography_matrices, filter_players=False
+            resized_frames_for_players, batch_homography_matrices, filter_players=False
         )
     )
-    if task_id:
+    if task_id is not None:
         progress = round(batch_start_progress + (batch_end_progress - batch_start_progress) * 0.9, 3)
         update_task_status(task_id, "processing", progress, "Detecting players")
     batch_players_top = []
@@ -127,10 +129,11 @@ def get_detections_from_frames(ball_detector, court_detector, person_detector, f
             batch_players_bottom.append(None)
     
     # Clean up intermediate results
+    del resized_frames_for_players
     del batch_players_top_unfiltered, batch_players_bottom_unfiltered
     
     # Step 4: Filtering complete (100% of batch)
-    if task_id:
+    if task_id is not None:
         progress = round(batch_end_progress, 3)
         update_task_status(task_id, "processing", progress, "Processing detections")
 
@@ -148,8 +151,8 @@ def get_detections_from_video(
     court_detector,
     person_detector,
     bounce_detector,
-    task_id: int,
     video_path: str,
+    task_id: Optional[int] = None,
     cap=None,
     valid_scenes=None,
 ):
@@ -271,7 +274,8 @@ def get_detections_from_video(
     print(f"[INFO]: {len(kps_court)} kps court detected")
 
     # Update progress to 0.8 after frame detection is complete
-    update_task_status(task_id, "processing", round(0.8, 3), "Detecting bounces")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.8, 3), "Detecting bounces")
     x_ball = [x[0] for x in ball_track]
     y_ball = [x[1] for x in ball_track]
     bounces = bounce_detector.predict(x_ball, y_ball)
@@ -380,26 +384,30 @@ def process_video(
     person_detector,
     bounce_detector,
     video_path: str,
-    task_id: int,
-    name: str,
+    task_id: Optional[int] = None,
+    name: str = "dev",
 ):
-    print(f"[INFO]: Processing video {task_id}")
-    update_task_status(task_id, "processing", round(0.0, 3), "Loading models")
+    task_suffix = task_id if task_id is not None else "dev"
+    print(f"[INFO]: Processing video {task_suffix}")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.0, 3), "Loading models")
 
     PIXEL_TO_METER_RATIO = 1 / 101.5
     scenes = scene_detect(video_path)
     print("[INFO]:", scenes)
     max_diff = max(scenes, key=lambda x: x[1] - x[0])
     thumbnail_index = max_diff[0]
-    thumbnail_path = f"output/output_{task_id}_thumbnail_{time.time()}.jpg"
+    thumbnail_path = f"output/output_{task_suffix}_thumbnail_{time.time()}.jpg"
 
-    update_task_status(task_id, "processing", round(0.05, 3), "Filtering scenes by court detection")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.05, 3), "Filtering scenes by court detection")
 
     # Filter scenes to only those containing a tennis court
     valid_scenes = get_valid_scenes(court_detector, video_path, scenes)
     print(f"[INFO]: {len(valid_scenes)} valid scenes out of {len(scenes)} total")
 
-    update_task_status(task_id, "processing", round(0.1, 3), "Loading video")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.1, 3), "Loading video")
 
     input_video_capture = cv2.VideoCapture(video_path)
     fps = input_video_capture.get(cv2.CAP_PROP_FPS)
@@ -409,7 +417,8 @@ def process_video(
     # Get device for memory cleanup
     device = getattr(ball_detector, 'device', 'cpu')
 
-    update_task_status(task_id, "processing", round(0.2, 3), "Detecting court and ball track")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.2, 3), "Detecting court and ball track")
     # Reuse video capture object to avoid reopening
     ball_track, bounces, homography_matrices, kps_court, player_top, player_bottom = (
         get_detections_from_video(
@@ -417,8 +426,8 @@ def process_video(
             court_detector,
             person_detector,
             bounce_detector,
-            task_id,
             video_path,
+            task_id,
             cap=input_video_capture,  # Reuse the capture object
             valid_scenes=valid_scenes,
         )
@@ -433,7 +442,8 @@ def process_video(
     #     frames,
     #     fps,
     # )
-    update_task_status(task_id, "processing", round(0.85, 3), "Processing ball track")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.85, 3), "Processing ball track")
     transformed_track = [
         perspective_transform_point(point, homography_matrices[i])
         for i, point in enumerate(ball_track)
@@ -454,13 +464,15 @@ def process_video(
                 break
     print(f"[INFO]: {len(serve_frames)} serves detected at frames: {sorted(serve_frames)}")
 
-    save_ball_track_in_db(task_id, transformed_track)
-    save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces}, serve_frames)
-    save_player_positions_in_db(task_id, player_top, player_bottom)
-    
+    if task_id is not None:
+        save_ball_track_in_db(task_id, transformed_track)
+        save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces}, serve_frames)
+        save_player_positions_in_db(task_id, player_top, player_bottom)
+
     # Clean up after saving to DB
     cleanup_memory(device)
-    update_task_status(task_id, "processing", round(0.87, 3), "Finding ball hits")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.87, 3), "Finding ball hits")
     direction_change_indices = list(
         get_direction_change_indices(ball_track, buffer_length=8)
     )
@@ -488,15 +500,17 @@ def process_video(
         outer += 1
 
     direction_change_indices = indices
-    save_direction_change_indices_in_db(
-        task_id, {index: ball_track[index] for index in direction_change_indices}
-    )
-    
+    if task_id is not None:
+        save_direction_change_indices_in_db(
+            task_id, {index: ball_track[index] for index in direction_change_indices}
+        )
+
     # Memory cleanup after direction change detection
     cleanup_memory(device)
 
     # Update progress to 0.9 after finding ball hits is complete
-    update_task_status(task_id, "processing", round(0.9, 3), "Calculating speed")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.9, 3), "Calculating speed")
 
     speed_before_bounce = dict()
     for bounce_index, source_indices in change_before_bounce.items():
@@ -527,15 +541,16 @@ def process_video(
         )
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
-    save_speed_in_db(task_id, speed_before_bounce)
-    
+    if task_id is not None:
+        save_speed_in_db(task_id, speed_before_bounce)
+
     # Memory cleanup after speed calculations
     cleanup_memory(device)
 
     minimap = get_court_img()
 
-    output_path = f"output/output_{task_id}_{time.time()}.mp4"
-    minimap_path = f"output/output_{task_id}_minimap_{time.time()}.mp4"
+    output_path = f"output/output_{task_suffix}_{time.time()}.mp4"
+    minimap_path = f"output/output_{task_suffix}_minimap_{time.time()}.mp4"
 
     output_video_writer = cv2.VideoWriter(
         output_path,
@@ -548,8 +563,9 @@ def process_video(
     width_minimap = 166
     height_minimap = 350
 
-    update_task_status(task_id, "processing", round(0.95, 3), "Creating annotated video")
-    
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.95, 3), "Creating annotated video")
+
     # Build valid frame set for output loop passthrough
     valid_frame_set = set()
     for start, end in valid_scenes:
@@ -570,7 +586,8 @@ def process_video(
 
         if i == thumbnail_index:
             cv2.imwrite(thumbnail_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            save_thumbnail_in_db(task_id, thumbnail_path)
+            if task_id is not None:
+                save_thumbnail_in_db(task_id, thumbnail_path)
 
         # Non-game frames: passthrough without annotations
         if i not in valid_frame_set:
@@ -696,7 +713,8 @@ def process_video(
         fps,
         (w, h),
     )
-    update_task_status(task_id, "processing", round(0.98, 3), "Creating minimap video")
+    if task_id is not None:
+        update_task_status(task_id, "processing", round(0.98, 3), "Creating minimap video")
     for i in range(len(transformed_track) - 1):
         minimap_copy = minimap.copy()
         if (
@@ -756,11 +774,10 @@ def process_video(
                 except cv2.error:
                     continue
 
-    heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
-    heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
-
+    heatmap_top_path = f"output/output_{task_suffix}_{time.time()}_heatmap_top.png"
+    heatmap_bottom_path = f"output/output_{task_suffix}_{time.time()}_heatmap_bottom.png"
     save_heatmap_data_in_db(task_id, top_court_points, bottom_court_points)
-
+    
     heatmap_top = generate_player_heatmap(top_court_points)
     heatmap_bottom = generate_player_heatmap(bottom_court_points)
     cv2.imwrite(heatmap_top_path, heatmap_top)
@@ -771,5 +788,6 @@ def process_video(
 
     cleanup_memory(device)
 
-    save_video_paths_in_db(task_id, name, output_path, minimap_path)
-    update_task_status(task_id, "completed", round(1.0, 3), "Video processed successfully")
+    if task_id is not None:
+        save_video_paths_in_db(task_id, name, output_path, minimap_path)
+        update_task_status(task_id, "completed", round(1.0, 3), "Video processed successfully")

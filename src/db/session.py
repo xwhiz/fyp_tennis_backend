@@ -5,14 +5,22 @@ from sqlalchemy.orm import sessionmaker
 
 from src.config import settings
 
-# Create engine with connection pooling
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    echo=False,
-)
+# Create engine; SQLite does not support pool_size/max_overflow/pool_pre_ping
+_is_sqlite = settings.database_url.strip().lower().startswith("sqlite")
+if _is_sqlite:
+    engine = create_engine(
+        settings.database_url,
+        echo=False,
+        connect_args={"check_same_thread": False} if "memory" in settings.database_url else {},
+    )
+else:
+    engine = create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        echo=False,
+    )
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

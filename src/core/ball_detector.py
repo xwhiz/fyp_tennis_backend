@@ -10,6 +10,7 @@ class BallDetector:
     def __init__(self, path_model=None, device="cuda"):
         self.model = BallTrackerNet(input_channels=9, out_channels=256)
         self.device = device
+        self._using_cpu_fallback = False
         if path_model:
             self.model.load_state_dict(torch.load(path_model, map_location=device))
             self.model = self.model.to(device)
@@ -36,13 +37,35 @@ class BallDetector:
             inp = np.expand_dims(imgs, axis=0)
 
             inp_tensor = torch.from_numpy(inp).float().to(self.device)
-            out = self.model(inp_tensor)
-            output = out.argmax(dim=1).detach().cpu().numpy()
-            
-            # Clean up GPU tensors immediately
-            del inp_tensor, out
-            if self.device == "cuda" and torch.cuda.is_available():
+            try:
+                with torch.inference_mode():
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        with torch.cuda.amp.autocast():
+                            out = self.model(inp_tensor)
+                    else:
+                        out = self.model(inp_tensor)
+            except torch.cuda.OutOfMemoryError:
+                if self.device != "cuda":
+                    raise
+
+                # Free fragmented CUDA cache, then switch to CPU for stability.
                 torch.cuda.empty_cache()
+                if not self._using_cpu_fallback:
+                    print("[WARNING]: CUDA OOM in ball detector, switching to CPU inference.")
+                    self.model = self.model.to("cpu")
+                    self.model.eval()
+                    self.device = "cpu"
+                    self._using_cpu_fallback = True
+
+                del inp_tensor
+                inp_tensor = torch.from_numpy(inp).float().to(self.device)
+                with torch.inference_mode():
+                    out = self.model(inp_tensor)
+
+            output = out.argmax(dim=1).cpu().numpy()
+            
+            # Clean up tensors immediately
+            del inp_tensor, out
             
             x_pred, y_pred = self.postprocess(output, prev_pred)
             prev_pred = [x_pred, y_pred]

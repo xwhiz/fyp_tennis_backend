@@ -10,7 +10,7 @@ import numpy as np
 from typing import Optional
 
 
-def scene_detect(path_video):
+def scene_detect(path_video, show_progress=False):
     """
     Split video to disjoint fragments based on color histograms
     """
@@ -22,7 +22,7 @@ def scene_detect(path_video):
 
     video_manager.set_downscale_factor()
     video_manager.start()
-    scene_manager.detect_scenes(frame_source=video_manager)
+    scene_manager.detect_scenes(frame_source=video_manager, show_progress=show_progress)
     scene_list = scene_manager.get_scene_list(base_timecode)
 
     if scene_list == []:

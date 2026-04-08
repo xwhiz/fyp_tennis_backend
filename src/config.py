@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     flower_unauthenticated_api: bool = True
     
     # Video Processing
-    video_batch_size: int = 500
+    video_batch_size: int = 200
     
     # Upload Settings
     upload_chunk_size: int = 20 * 1024 * 1024  # 20MB in bytes (default: 20971520)
