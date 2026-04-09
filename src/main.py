@@ -14,7 +14,8 @@ from typing import Annotated, Optional
 
 
 import cv2
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 import numpy as np
 import torch
 from fastapi import (
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from src.config import settings
+from src.middleware.auth import auth_middleware
 from src.core.court_reference import CourtReference
 from src.core.get_direction_change_indices import get_direction_change_indices
 from src.core.stream_infer import (
@@ -62,9 +64,18 @@ from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.homography_matrices import HomographyMatrices
 from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.player_positions import PlayerPositions
+from src.models.user import User
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.db.utils import update_task_status, SessionDep
+from src.schemas.auth import (
+    ForgotPasswordRequest,
+    RefreshTokenRequest,
+    ResetPasswordRequest,
+    SignInRequest,
+    SignUpRequest,
+)
 from src.schemas.speed_at import SpeedAt
+from src.schemas.user import UpdateProfileRequest
 from src.schemas.video_paths import VideoPathsSchema
 from src.schemas.ball_track import BallTrackSchema
 from src.schemas.bounces import BouncesSchema
@@ -74,13 +85,17 @@ from src.schemas.thumbnail import ThumbnailSchema
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
+from src.seed.admin import seed_admin_user
+from src.services.jwt_service import create_access_token, verify_access_token
+from src.utils.response import error_response, success_response
 from src.celery.worker import process_video_task, get_celery
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Models are now loaded in Celery worker, not in FastAPI app
-    
+    seed_admin_user()
+
     # Re-queue unprocessed tasks on startup
     try:
         with Session(Engine.instance()) as session:
@@ -120,6 +135,8 @@ async def lifespan(app: FastAPI):
 
 
 openapi_tags = [
+    {"name": "auth", "description": "Authentication"},
+    {"name": "user", "description": "User Profile"},
     {"name": "tasks", "description": "Tasks"},
     {"name": "stats", "description": "Stats"},
     {"name": "misc", "description": "Misc"},
@@ -130,6 +147,7 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_tags=openapi_tags,
 )
+app.middleware("http")(auth_middleware)
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("output", exist_ok=True)
@@ -137,6 +155,148 @@ os.makedirs("output", exist_ok=True)
 # static files
 app.mount("/output", StaticFiles(directory="output"), name="output")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    message = "; ".join(error.get("msg", "Validation error") for error in exc.errors())
+    return JSONResponse(
+        status_code=400,
+        content=error_response(message or "Validation error details"),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401:
+        message = "Session expired"
+    elif exc.status_code == 403:
+        message = "Access denied"
+    elif exc.status_code >= 500:
+        message = "Internal server error"
+    elif isinstance(exc.detail, str):
+        message = exc.detail
+    else:
+        message = "Validation error details"
+
+    return JSONResponse(status_code=exc.status_code, content=error_response(message))
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content=error_response("Internal server error"),
+    )
+
+
+def get_authenticated_user(request: Request, session: Session) -> User:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    user = session.exec(select(User).where(User.id == user_id)).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="Session expired")
+    return user
+
+
+@app.post("/auth/sign-up", tags=["auth"])
+def sign_up(payload: SignUpRequest, session: SessionDep):
+    if payload.consent is not True:
+        raise HTTPException(status_code=400, detail="Consent must be true")
+
+    normalized_email = payload.email.strip().lower()
+    existing_user = session.exec(select(User).where(User.email == normalized_email)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    new_user = User(
+        first_name=payload.firstName.strip(),
+        last_name=payload.lastName.strip(),
+        player_height=payload.playerHeight,
+        dominant_hand=payload.dominantHand.strip().lower(),
+        email=normalized_email,
+        consent=payload.consent,
+    )
+    new_user.set_password(payload.password)
+
+    session.add(new_user)
+    session.commit()
+    return success_response("Account created successfully")
+
+
+@app.post("/auth/sign-in", tags=["auth"])
+def sign_in(payload: SignInRequest, session: SessionDep):
+    normalized_email = payload.email.strip().lower()
+    user = session.exec(select(User).where(User.email == normalized_email)).first()
+    if user is None or not user.verify_password(payload.password):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+
+    token = create_access_token(
+        user_id=user.id,
+        role=user.role.value,
+        email=user.email,
+    )
+    return success_response(
+        "Sign in successful",
+        {"token": token},
+    )
+
+
+@app.post("/auth/forgot-password", tags=["auth"])
+def forgot_password(payload: ForgotPasswordRequest, session: SessionDep):
+    return success_response("Password reset link sent")
+
+
+@app.post("/auth/refresh-token", tags=["auth"])
+def refresh_token(payload: RefreshTokenRequest, request: Request, session: SessionDep):
+    try:
+        token_payload = verify_access_token(payload.token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    request_user = get_authenticated_user(request, session)
+    if token_payload.get("userId") != request_user.id:
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    token = create_access_token(
+        user_id=request_user.id,
+        role=request_user.role.value,
+        email=request_user.email,
+    )
+    return success_response("Token refreshed", {"token": token})
+
+
+@app.post("/auth/reset-password", tags=["auth"])
+def reset_password(payload: ResetPasswordRequest, request: Request, session: SessionDep):
+    user = get_authenticated_user(request, session)
+    if not user.verify_password(payload.currentPassword):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    user.set_password(payload.newPassword)
+    session.add(user)
+    session.commit()
+    return success_response("Password updated successfully")
+
+
+@app.get("/user/profile", tags=["user"])
+def get_user_profile(request: Request, session: SessionDep):
+    user = get_authenticated_user(request, session)
+    return success_response("Profile fetched", user.to_profile_dict())
+
+
+@app.put("/user/profile", tags=["user"])
+def update_user_profile(payload: UpdateProfileRequest, request: Request, session: SessionDep):
+    user = get_authenticated_user(request, session)
+    user.first_name = payload.firstName.strip()
+    user.last_name = payload.lastName.strip()
+    user.player_height = payload.playerHeight
+    user.dominant_hand = payload.dominantHand.strip().lower()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return success_response("Profile updated successfully", user.to_profile_dict())
 
 
 @app.get("/all_tasks", tags=["tasks"])

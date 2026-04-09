@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Boolean, Float, String
+from sqlalchemy import BigInteger, Boolean, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -9,7 +9,11 @@ class BackgroundTask(Base, TimestampMixin):
     
     __tablename__ = "background_tasks"
     
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(default="created")
     name: Mapped[str] = mapped_column(default="")

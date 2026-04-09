@@ -8,6 +8,11 @@ import os
 
 # Must set before any src import so config and DB use in-memory SQLite
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["JWT_SECRET"] = "test-jwt-secret"
+os.environ["ADMIN_EMAIL"] = "admin@example.com"
+os.environ["ADMIN_PASSWORD"] = "admin123"
+os.environ["ADMIN_FIRST_NAME"] = "Admin"
+os.environ["ADMIN_LAST_NAME"] = "User"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +30,7 @@ from src.models import (
     player_positions,
     speed,
     thumbnail,
+    user,
     video_paths,
 )
 
@@ -44,20 +50,56 @@ def _db_tables():
 
 
 @pytest.fixture
-def client(_db_tables):
+def auth_headers(_db_tables):
+    from sqlmodel import Session, select
+    from src.db.engine import Engine
+    from src.models.user import User, UserRole
+    from src.services.jwt_service import create_access_token
+
+    with Session(Engine.instance()) as session:
+        test_admin = session.exec(
+            select(User).where(User.email == "admin@example.com"),
+        ).first()
+        if test_admin is None:
+            test_admin = User(
+                first_name="Admin",
+                last_name="User",
+                player_height=None,
+                dominant_hand="right",
+                email="admin@example.com",
+                consent=True,
+                role=UserRole.ADMIN,
+            )
+            test_admin.set_password("admin123")
+            session.add(test_admin)
+            session.commit()
+            session.refresh(test_admin)
+
+    token = create_access_token(
+        user_id=test_admin.id,
+        role=test_admin.role.value,
+        email=test_admin.email,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def client(_db_tables, auth_headers):
     """FastAPI TestClient using the test DB (in-memory SQLite)."""
     from src.main import app
     with TestClient(app) as c:
+        c.headers.update(auth_headers)
         yield c
 
 
 @pytest.fixture
-def client_no_celery(_db_tables):
+def client_no_celery(_db_tables, auth_headers):
     """TestClient with Celery process_video_task.delay mocked (no broker/worker)."""
     from src.main import app
     with patch("src.main.process_video_task") as mock_task:
         mock_task.delay = MagicMock(return_value=MagicMock(id="mock-id"))
         with TestClient(app) as c:
+            c.headers.update(auth_headers)
             yield c
 
 
