@@ -96,7 +96,7 @@ def client(_db_tables, auth_headers):
 def client_no_celery(_db_tables, auth_headers):
     """TestClient with Celery process_video_task.delay mocked (no broker/worker)."""
     from src.main import app
-    with patch("src.main.process_video_task") as mock_task:
+    with patch("src.api.tasks.process_video_task") as mock_task:
         mock_task.delay = MagicMock(return_value=MagicMock(id="mock-id"))
         with TestClient(app) as c:
             c.headers.update(auth_headers)
