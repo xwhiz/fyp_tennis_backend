@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     
     # Upload Settings
     upload_chunk_size: int = 20 * 1024 * 1024  # 20MB in bytes (default: 20971520)
+
+    # JWT Auth
+    jwt_secret: str = "change-me-in-env"
+    jwt_algorithm: str = "HS256"
+    jwt_expires_in_hours: int = 72
+
+    # Admin Seeder
+    admin_email: str = "admin@example.com"
+    admin_password: str = "admin123"
+    admin_first_name: str = "Admin"
+    admin_last_name: str = "User"
     
     model_config = SettingsConfigDict(
         env_file=".env",

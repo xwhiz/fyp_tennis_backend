@@ -50,14 +50,14 @@ class TestProcessVideo:
         data_form = {"name": "test", "total_size": "5", "duplicate_task": "false"}
         r = client_no_celery.post("/process_video", data=data_form, files=files)
         assert r.status_code == 400
-        assert "video" in r.json().get("detail", "").lower()
+        assert "video" in r.json().get("message", "").lower()
 
     def test_process_video_duplicate_task_no_task_id_returns_400(self, client_no_celery):
         files = {"video_file": ("x.mp4", io.BytesIO(b"x"), "video/mp4")}
         data_form = {"name": "test", "total_size": "1", "duplicate_task": "true"}
         r = client_no_celery.post("/process_video", data=data_form, files=files)
         assert r.status_code == 400
-        assert "task_id" in r.json().get("detail", "").lower()
+        assert "task_id" in r.json().get("message", "").lower()
 
     def test_process_video_duplicate_task_invalid_task_id_returns_404(self, client_no_celery):
         files = {"video_file": ("x.mp4", io.BytesIO(b"x"), "video/mp4")}
@@ -94,7 +94,7 @@ class TestUploadChunk:
         data_form = {"chunk_number": "0", "total_chunks": "1"}
         r = client.post(f"/upload_chunk/{sample_task_id}", data=data_form, files=files)
         assert r.status_code == 400
-        assert "already" in r.json().get("detail", "").lower() or "completed" in r.json().get("detail", "").lower()
+        assert "already" in r.json().get("message", "").lower() or "completed" in r.json().get("message", "").lower()
 
 
 @pytest.mark.integration

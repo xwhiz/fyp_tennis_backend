@@ -2,16 +2,19 @@
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from src.config import settings
 
 # Create engine; SQLite does not support pool_size/max_overflow/pool_pre_ping
 _is_sqlite = settings.database_url.strip().lower().startswith("sqlite")
 if _is_sqlite:
+    sqlite_memory = "memory" in settings.database_url
     engine = create_engine(
         settings.database_url,
         echo=False,
-        connect_args={"check_same_thread": False} if "memory" in settings.database_url else {},
+        connect_args={"check_same_thread": False} if sqlite_memory else {},
+        poolclass=StaticPool if sqlite_memory else None,
     )
 else:
     engine = create_engine(
