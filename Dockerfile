@@ -17,9 +17,11 @@ RUN pip install uv
 
 COPY pyproject.toml uv.lock ./
 
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN uv sync --no-dev
 
 COPY entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

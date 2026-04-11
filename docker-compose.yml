@@ -3,6 +3,7 @@ version: "3.9"
 services:
   api:
     build: .
+    platform: linux/amd64
     container_name: tennis_api
     command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000"
     entrypoint: /entrypoint.sh
@@ -22,6 +23,7 @@ services:
 
   celery_worker:
     build: .
+    platform: linux/amd64
     runtime: nvidia
     container_name: tennis_celery_worker
     command: uv run celery -A src.celery.worker worker --loglevel=info --concurrency=1
@@ -39,6 +41,7 @@ services:
 
   flower:
     build: .
+    platform: linux/amd64
     container_name: tennis_flower
     command: uv run celery --broker=amqp://guest:guest@rabbitmq:5672// flower --port=5555
     entrypoint: /entrypoint.sh
@@ -57,6 +60,7 @@ services:
 
   postgres:
     image: postgres:15
+    platform: linux/amd64
     container_name: tennis_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -69,6 +73,7 @@ services:
 
   adminer:
     image: adminer
+    platform: linux/amd64
     container_name: tennis_adminer
     ports:
       - "8080:8080"
@@ -79,6 +84,7 @@ services:
 
   redis:
     image: redis:7
+    platform: linux/amd64
     container_name: tennis_redis
     ports:
       - "6380:6379"
@@ -87,6 +93,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management
+    platform: linux/amd64
     container_name: tennis_rabbitmq
     ports:
       - "5673:5672"
