@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Boolean, Float, Integer, String
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -22,3 +22,9 @@ class BackgroundTask(Base, TimestampMixin):
     total_upload_size: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     uploaded_size: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     is_uploaded_fully: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    owner_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )

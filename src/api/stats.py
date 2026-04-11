@@ -10,6 +10,7 @@ from sqlmodel import select
 from src.core.utils import classify_serve_type, generate_player_heatmap
 from src.db.utils import SessionDep, save_heatmap_data_in_db
 from src.dependencies.auth import AuthContext, get_auth_context
+from src.dependencies.ownership import require_task_access
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
@@ -18,7 +19,6 @@ from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.player_positions import PlayerPositions
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
-from src.models.user import UserRole
 from src.models.video_paths import VideoPaths
 from src.schemas.ball_track import BallTrackSchema
 from src.schemas.bounces import BouncesSchema
@@ -30,11 +30,6 @@ from src.schemas.video_paths import VideoPathsSchema
 router = APIRouter(tags=["stats"])
 
 
-def _ensure_admin(auth_ctx: AuthContext) -> None:
-    if auth_ctx.role != UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-
 @router.get("/get_video_paths/{task_id}")
 async def get_video_paths(
     task_id: int,
@@ -42,8 +37,7 @@ async def get_video_paths(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(VideoPaths).where(VideoPaths.task_id == task_id)
     video_paths = session.exec(statement).first()
     if video_paths is None:
@@ -60,8 +54,7 @@ async def get_speed_stats(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(Speed).where(Speed.task_id == task_id)
     speed_stats = session.exec(statement).first()
 
@@ -79,8 +72,7 @@ async def get_ball_track(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(BallTrack).where(BallTrack.task_id == task_id)
     ball_track = session.exec(statement).first()
     if ball_track is None:
@@ -98,8 +90,7 @@ async def get_bounces(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(Bounces).where(Bounces.task_id == task_id)
     bounces = session.exec(statement).first()
     if bounces is None:
@@ -117,8 +108,7 @@ async def get_direction_change_indices_api(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)
     direction_change_indices = session.exec(statement).first()
     if direction_change_indices is None:
@@ -136,8 +126,7 @@ async def get_player_positions(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
     player_positions = session.exec(statement).first()
     if player_positions is None:
@@ -155,8 +144,7 @@ async def get_thumbnail(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    if is_api:
-        _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     statement = select(Thumbnail).where(Thumbnail.task_id == task_id)
     thumbnail = session.exec(statement).first()
     if thumbnail is None:
@@ -178,7 +166,7 @@ async def get_all_stats(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     video_paths = await get_video_paths(task_id, session, is_api=False, auth_ctx=auth_ctx)
     speed_stats = await get_speed_stats(task_id, session, is_api=False, auth_ctx=auth_ctx)
     ball_track = await get_ball_track(task_id, session, is_api=False, auth_ctx=auth_ctx)
@@ -212,7 +200,7 @@ async def get_serve_stats(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     bounces_row = session.exec(select(Bounces).where(Bounces.task_id == task_id)).first()
     if bounces_row is None:
         return {"success": True, "message": "Bounces not found", "data": {"serves": []}}
@@ -275,9 +263,10 @@ async def get_serve_stats(
 @router.get("/player_heatmaps/{task_id}")
 async def get_player_heatmaps(
     task_id: int,
+    session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     heatmap_top_path = f"output/output_{task_id}_*_heatmap_top.png"
     heatmap_bottom_path = f"output/output_{task_id}_*_heatmap_bottom.png"
 
@@ -315,7 +304,7 @@ async def recreate_player_heatmaps(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    _ensure_admin(auth_ctx)
+    require_task_access(session, task_id, auth_ctx)
     heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
     heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
 

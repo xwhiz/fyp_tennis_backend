@@ -1,4 +1,4 @@
-from sqlalchemy import JSON
+from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -13,3 +13,9 @@ class PlayerHeatmapData(Base, TimestampMixin):
     task_id: Mapped[int] = mapped_column(unique=True)
     top_points: Mapped[dict] = mapped_column(JSON)  # list of [x, y]
     bottom_points: Mapped[dict] = mapped_column(JSON)  # list of [x, y]
+    owner_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )

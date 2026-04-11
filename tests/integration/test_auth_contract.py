@@ -180,7 +180,7 @@ class TestAuthMiddlewareAndRbac:
             "message": "Session expired",
         }
 
-    def test_annotator_forbidden(self):
+    def test_annotator_can_access_profile(self):
         with Session(Engine.instance()) as session:
             annotator = User(
                 first_name="Anno",
@@ -206,13 +206,10 @@ class TestAuthMiddlewareAndRbac:
                 "/user/profile",
                 headers={"Authorization": f"Bearer {token}"},
             )
-        assert response.status_code == 403
-        assert response.json() == {
-            "success": False,
-            "message": "Access denied",
-        }
+        assert response.status_code == 200
+        assert response.json().get("success") is True
 
-    def test_regular_user_cannot_access_other_protected_resources(self):
+    def test_regular_user_can_list_own_tasks(self):
         with Session(Engine.instance()) as session:
             regular = User(
                 first_name="Reg",
@@ -238,8 +235,7 @@ class TestAuthMiddlewareAndRbac:
                 "/all_tasks",
                 headers={"Authorization": f"Bearer {token}"},
             )
-        assert response.status_code == 403
-        assert response.json() == {
-            "success": False,
-            "message": "Access denied",
-        }
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload.get("success") is True
+        assert isinstance(payload.get("data"), list)

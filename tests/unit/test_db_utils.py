@@ -1,4 +1,7 @@
 """Unit tests for DB utilities (src.db.utils)."""
+import uuid
+from datetime import datetime
+
 import pytest
 from sqlmodel import Session, select
 
@@ -12,7 +15,41 @@ from src.db.utils import (
     save_video_paths_in_db,
 )
 from src.models.background_task import BackgroundTask
-from datetime import datetime
+from src.models.user import User, UserRole
+
+
+def _create_user_and_task(session: Session) -> tuple[str, int]:
+    uid = str(uuid.uuid4())
+    user = User(
+        first_name="U",
+        last_name="T",
+        player_height=None,
+        dominant_hand="right",
+        email=f"ut_{uid}@example.com",
+        consent=True,
+        role=UserRole.USER,
+    )
+    user.set_password("secret")
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    task = BackgroundTask(
+        progress=0.0,
+        name="ut-task",
+        status="pending",
+        video_path="",
+        description="",
+        total_upload_size=0,
+        uploaded_size=0,
+        is_uploaded_fully=True,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        owner_id=user.id,
+    )
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return user.id, task.id
 
 
 @pytest.mark.unit
@@ -42,22 +79,7 @@ class TestUpdateTaskStatus:
 
     def test_update_task_status_updates_existing_task(self, _db_tables):
         with Session(Engine.instance()) as session:
-            task = BackgroundTask(
-                progress=0.0,
-                name="ut-task",
-                status="pending",
-                video_path="",
-                description="",
-                total_upload_size=0,
-                uploaded_size=0,
-                is_uploaded_fully=True,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            session.add(task)
-            session.commit()
-            session.refresh(task)
-            task_id = task.id
+            _, task_id = _create_user_and_task(session)
 
         update_task_status(task_id, "processing", progress=25.0, description="Running")
 
@@ -75,22 +97,14 @@ class TestUpdateUploadProgress:
 
     def test_update_upload_progress_updates_existing_task(self, _db_tables):
         with Session(Engine.instance()) as session:
-            task = BackgroundTask(
-                progress=0.0,
-                name="ut-upload",
-                status="uploading",
-                video_path="",
-                description="",
-                total_upload_size=1000,
-                uploaded_size=0,
-                is_uploaded_fully=False,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            session.add(task)
+            _, task_id = _create_user_and_task(session)
+            t = session.exec(select(BackgroundTask).where(BackgroundTask.id == task_id)).first()
+            t.total_upload_size = 1000
+            t.uploaded_size = 0
+            t.is_uploaded_fully = False
+            t.status = "uploading"
+            session.add(t)
             session.commit()
-            session.refresh(task)
-            task_id = task.id
 
         update_upload_progress(task_id, 500)
 
@@ -106,22 +120,7 @@ class TestSaveFunctions:
 
     def test_save_ball_track_in_db(self, _db_tables):
         with Session(Engine.instance()) as session:
-            task = BackgroundTask(
-                progress=100.0,
-                name="bt-task",
-                status="completed",
-                video_path="",
-                description="",
-                total_upload_size=0,
-                uploaded_size=0,
-                is_uploaded_fully=True,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            session.add(task)
-            session.commit()
-            session.refresh(task)
-            task_id = task.id
+            _, task_id = _create_user_and_task(session)
 
         ball_track = [[100.0, 200.0], [101.0, 201.0]]
         save_ball_track_in_db(task_id, ball_track)
@@ -129,44 +128,14 @@ class TestSaveFunctions:
 
     def test_save_video_paths_in_db(self, _db_tables):
         with Session(Engine.instance()) as session:
-            task = BackgroundTask(
-                progress=100.0,
-                name="vp-task",
-                status="completed",
-                video_path="",
-                description="",
-                total_upload_size=0,
-                uploaded_size=0,
-                is_uploaded_fully=True,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            session.add(task)
-            session.commit()
-            session.refresh(task)
-            task_id = task.id
+            _, task_id = _create_user_and_task(session)
 
         save_video_paths_in_db(task_id, "vp-task", "/output/out.mp4", "/output/mini.png")
         # No exception
 
     def test_save_thumbnail_in_db(self, _db_tables):
         with Session(Engine.instance()) as session:
-            task = BackgroundTask(
-                progress=100.0,
-                name="th-task",
-                status="completed",
-                video_path="",
-                description="",
-                total_upload_size=0,
-                uploaded_size=0,
-                is_uploaded_fully=True,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-            )
-            session.add(task)
-            session.commit()
-            session.refresh(task)
-            task_id = task.id
+            _, task_id = _create_user_and_task(session)
 
         save_thumbnail_in_db(task_id, "/output/thumb.jpg")
         # No exception

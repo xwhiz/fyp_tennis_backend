@@ -4,25 +4,21 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from src.db.utils import SessionDep
 from src.dependencies.auth import AuthContext, get_auth_context
-from src.models.user import UserRole
+from src.dependencies.ownership import require_output_stream_path, require_upload_stream_path
 
 router = APIRouter(tags=["stream"])
-
-
-def _ensure_admin(auth_ctx: AuthContext) -> None:
-    if auth_ctx.role != UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="Access denied")
 
 
 @router.get("/stream/output/{filename}")
 async def stream_output_file(
     filename: str,
     request: Request,
+    session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
-    file_path = f"./output/{filename}"
+    file_path = require_output_stream_path(session, filename, auth_ctx)
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -42,10 +38,10 @@ async def stream_output_file(
 async def stream_uploads_file(
     filename: str,
     request: Request,
+    session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
-    file_path = f"./uploads/{filename}"
+    file_path = require_upload_stream_path(session, filename, auth_ctx)
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")

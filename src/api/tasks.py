@@ -10,6 +10,7 @@ from src.config import settings
 from src.db.engine import Engine
 from src.db.utils import SessionDep
 from src.dependencies.auth import AuthContext, get_auth_context
+from src.dependencies.ownership import is_admin, require_task_access
 from src.models.background_task import BackgroundTask
 from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
@@ -17,16 +18,10 @@ from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.player_positions import PlayerPositions
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
-from src.models.user import UserRole
 from src.models.video_paths import VideoPaths
 from src.schemas.process_video_response import ProcessVideoResponse
 
 router = APIRouter(tags=["tasks"])
-
-
-def _ensure_admin(auth_ctx: AuthContext) -> None:
-    if auth_ctx.role != UserRole.ADMIN.value:
-        raise HTTPException(status_code=403, detail="Access denied")
 
 
 @router.get("/all_tasks")
@@ -34,8 +29,9 @@ def get_all_tasks(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
     statement = select(BackgroundTask)
+    if not is_admin(auth_ctx):
+        statement = statement.where(BackgroundTask.owner_id == auth_ctx.user_id)
     tasks = session.exec(statement).all()
     tasks = [
         {
@@ -62,12 +58,14 @@ def get_task_progress(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
     statement = select(BackgroundTask).where(BackgroundTask.id == process_id)
     task = session.exec(statement).first()
 
     if not task:
         return None if not is_api else {"success": True, "message": "Process not found"}
+
+    if not is_admin(auth_ctx) and task.owner_id != auth_ctx.user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     task_dict = {
         "process_id": task.id,
@@ -97,8 +95,6 @@ async def handle_process_video_request(
     task_id: Optional[int] = Form(None),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> ProcessVideoResponse:
-    _ensure_admin(auth_ctx)
-
     if duplicate_task and task_id is None:
         raise HTTPException(status_code=400, detail="task_id required when duplicate_task is True")
 
@@ -109,6 +105,9 @@ async def handle_process_video_request(
 
             if not existing_task:
                 raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+
+            if not is_admin(auth_ctx) and existing_task.owner_id != auth_ctx.user_id:
+                raise HTTPException(status_code=403, detail="Access denied")
 
             os.makedirs("./uploads", exist_ok=True)
             os.makedirs("./uploads/temp", exist_ok=True)
@@ -128,6 +127,7 @@ async def handle_process_video_request(
                     is_uploaded_fully=True,
                     created_at=datetime.now(),
                     updated_at=datetime.now(),
+                    owner_id=auth_ctx.user_id,
                 )
                 session.add(new_task)
                 session.commit()
@@ -202,6 +202,7 @@ async def handle_process_video_request(
                 is_uploaded_fully=False,
                 created_at=datetime.now(),
                 updated_at=datetime.now(),
+                owner_id=auth_ctx.user_id,
             )
             session.add(task)
             session.commit()
@@ -238,6 +239,7 @@ async def handle_process_video_request(
             is_uploaded_fully=True,
             created_at=datetime.now(),
             updated_at=datetime.now(),
+            owner_id=auth_ctx.user_id,
         )
         session.add(task)
         session.commit()
@@ -270,12 +272,7 @@ async def upload_chunk(
     total_chunks: int = Form(None),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
-    statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
-    task = session.exec(statement).first()
-
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+    task = require_task_access(session, task_id, auth_ctx)
 
     if task.is_uploaded_fully:
         raise HTTPException(status_code=400, detail="Task upload already completed. Cannot upload more chunks.")
@@ -369,12 +366,7 @@ def delete_task(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    _ensure_admin(auth_ctx)
-    statement = select(BackgroundTask).where(BackgroundTask.id == task_id)
-    task = session.exec(statement).first()
-
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task with id {task_id} not found")
+    task = require_task_access(session, task_id, auth_ctx)
 
     files_deleted = []
     records_deleted = 0

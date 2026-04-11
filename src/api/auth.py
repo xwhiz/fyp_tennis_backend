@@ -3,7 +3,7 @@ from sqlmodel import select
 
 from src.dependencies.auth import AuthContext, get_auth_context
 from src.db.utils import SessionDep
-from src.models.user import User, UserRole
+from src.models.user import User
 from src.schemas.auth import (
     ForgotPasswordRequest,
     RefreshTokenRequest,
@@ -68,9 +68,6 @@ def refresh_token(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    if auth_ctx.role == UserRole.ANNOTATOR.value:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     try:
         token_payload = verify_access_token(payload.token)
     except Exception:
@@ -93,9 +90,6 @@ def reset_password(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
-    if auth_ctx.role == UserRole.ANNOTATOR.value:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     user = auth_ctx.user
     if not user.verify_password(payload.currentPassword):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
