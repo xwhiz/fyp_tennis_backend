@@ -1,62 +1,51 @@
-version: "3.9"
+# One image for api / celery / flower: same build, same layers on disk.
+x-app-base: &app-base
+  build: .
+  platform: linux/amd64
+  image: fyp_tennis_backend:dev
+  entrypoint: /entrypoint.sh
+  env_file:
+    - .env
+  environment:
+    UV_PROJECT_ENVIRONMENT: /opt/venv
+    DATABASE_URL: ${DATABASE_URL}
+  volumes:
+    - .:/app
 
 services:
   api:
-    build: .
+    <<: *app-base
     container_name: tennis_api
     command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000"
-    entrypoint: /entrypoint.sh
-    environment:
-      UV_PROJECT_ENVIRONMENT: /opt/venv
-      DATABASE_URL: ${DATABASE_URL}
-    volumes:
-      - .:/app
     ports:
       - "7000:7000"
-    env_file:
-      - .env
     depends_on:
       - postgres
       - redis
       - rabbitmq
 
   celery_worker:
-    build: .
+    <<: *app-base
     runtime: nvidia
     container_name: tennis_celery_worker
     command: uv run celery -A src.celery.worker worker --loglevel=info --concurrency=1
-    entrypoint: /entrypoint.sh
-    environment:
-      UV_PROJECT_ENVIRONMENT: /opt/venv
-      DATABASE_URL: ${DATABASE_URL}
-    volumes:
-      - .:/app
-    env_file:
-      - .env
     depends_on:
       - redis
       - rabbitmq
 
   flower:
-    build: .
+    <<: *app-base
     container_name: tennis_flower
     command: uv run celery --broker=amqp://guest:guest@rabbitmq:5672// flower --port=5555
-    entrypoint: /entrypoint.sh
-    environment:
-      UV_PROJECT_ENVIRONMENT: /opt/venv
-      DATABASE_URL: ${DATABASE_URL}
-    volumes:
-      - .:/app
     ports:
       - "5556:5555"
-    env_file:
-      - .env
     depends_on:
       - redis
       - rabbitmq
 
   postgres:
     image: postgres:15
+    platform: linux/amd64
     container_name: tennis_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -69,6 +58,7 @@ services:
 
   adminer:
     image: adminer
+    platform: linux/amd64
     container_name: tennis_adminer
     ports:
       - "8080:8080"
@@ -79,6 +69,7 @@ services:
 
   redis:
     image: redis:7
+    platform: linux/amd64
     container_name: tennis_redis
     ports:
       - "6380:6379"
@@ -87,6 +78,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management
+    platform: linux/amd64
     container_name: tennis_rabbitmq
     ports:
       - "5673:5672"

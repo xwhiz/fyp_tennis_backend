@@ -11,8 +11,8 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "AceVision Backend"
-    app_env: str = "development"
-    log_level: str = "INFO"
+    app_env: str = "dev"
+    api_version: str = "0.1.0"
 
     # Server
     host: str = "0.0.0.0"
