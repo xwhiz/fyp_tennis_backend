@@ -64,6 +64,9 @@ openapi_tags = [
 
 app = FastAPI(
     title=settings.app_name,
+    version=settings.api_version,
+    docs_url=None if settings.app_env == "prod" else "/docs",
+    redoc_url=None if settings.app_env == "prod" else "/redoc",
     description="A Self Hosted Tennis Analytics Platform",
     lifespan=lifespan,
     openapi_tags=openapi_tags,
