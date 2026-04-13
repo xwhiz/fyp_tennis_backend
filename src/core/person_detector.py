@@ -57,7 +57,7 @@ class PersonDetector:
         )
         person_bboxes_top, person_bboxes_bottom = [], []
 
-        bboxes, probs = self.detect(image, person_min_score=0.5)
+        bboxes, probs = self.detect(image, person_min_score=0.3)
         if len(bboxes) > 0:
             person_points = [
                 [int((bbox[2] + bbox[0]) / 2), int(bbox[3])] for bbox in bboxes
