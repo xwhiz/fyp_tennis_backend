@@ -202,57 +202,17 @@ def get_detections_from_video(
     # Get device from ball_detector for memory cleanup
     device = getattr(ball_detector, 'device', 'cpu')
     
-    frames = []
+    frames: list = []
     batch_count = 0
-    # Track how many valid frames we've processed so far (for progress reporting)
-    valid_frames_processed = 0
-    
-    for i in tqdm(range(total_frames)):
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Global index of frames[0] while building a batch (for progress + ordering)
+    pending_start: Optional[int] = None
 
-        # Skip non-game frames: append placeholders without running detectors
-        if valid_frame_set is not None and i not in valid_frame_set:
-            ball_track.append((None, None))
-            homography_matrices.append(None)
-            kps_court.append(None)
-            player_top.append(None)
-            player_bottom.append(None)
-            continue
-
-        frames.append(frame)
-
-        if len(frames) == batch_size:
-            (
-                batch_ball_track,
-                batch_homography_matrices,
-                batch_kps_court,
-                batch_players_top,
-                batch_players_bottom,
-            ) = get_detections_from_frames(
-                ball_detector, court_detector, person_detector, frames,
-                task_id=task_id, current_frame=i - batch_size + 1, total_frames=total_frames
-            )
-            ball_track.extend(batch_ball_track)
-            homography_matrices.extend(batch_homography_matrices)
-            kps_court.extend(batch_kps_court)
-            player_top.extend(batch_players_top)
-            player_bottom.extend(batch_players_bottom)
-            
-            # Clean up batch data
-            del frames
-            del batch_ball_track, batch_homography_matrices, batch_kps_court
-            del batch_players_top, batch_players_bottom
-            
-            # Memory cleanup every batch for large videos, every 5 batches for smaller ones
-            batch_count += 1
-            if total_frames > 50000 or batch_count % 5 == 0:
-                cleanup_memory(device)
-            
-            frames = []
-
-    if frames:
+    def flush_pending(anchor_idx: int) -> None:
+        """Run detectors on buffered valid frames and append in global frame order."""
+        nonlocal ball_track, homography_matrices, kps_court, player_top, player_bottom
+        nonlocal batch_count, frames
+        if not frames:
+            return
         (
             batch_ball_track,
             batch_homography_matrices,
@@ -260,20 +220,59 @@ def get_detections_from_video(
             batch_players_top,
             batch_players_bottom,
         ) = get_detections_from_frames(
-            ball_detector, court_detector, person_detector, frames,
-            task_id=task_id, current_frame=total_frames - len(frames), total_frames=total_frames
+            ball_detector,
+            court_detector,
+            person_detector,
+            frames,
+            task_id=task_id,
+            current_frame=anchor_idx,
+            total_frames=total_frames,
         )
-
-        ball_track.extend(batch_ball_track[: len(frames)])
-        homography_matrices.extend(batch_homography_matrices[: len(frames)])
-        kps_court.extend(batch_kps_court[: len(frames)])
-        player_top.extend(batch_players_top[: len(frames)])
-        player_bottom.extend(batch_players_bottom[: len(frames)])
-        
-        # Clean up remaining batch data
-        del frames
+        n = len(frames)
+        ball_track.extend(batch_ball_track[:n])
+        homography_matrices.extend(batch_homography_matrices[:n])
+        kps_court.extend(batch_kps_court[:n])
+        player_top.extend(batch_players_top[:n])
+        player_bottom.extend(batch_players_bottom[:n])
         del batch_ball_track, batch_homography_matrices, batch_kps_court
         del batch_players_top, batch_players_bottom
+        frames.clear()
+        batch_count += 1
+        if total_frames > 50000 or batch_count % 5 == 0:
+            cleanup_memory(device)
+
+    for i in tqdm(range(total_frames)):
+        ret, frame = cap.read()
+        if not ret:
+            if frames:
+                flush_pending(pending_start if pending_start is not None else i)
+                pending_start = None
+            break
+
+        # Gaps between valid scenes: must flush buffered valid frames *before* placeholders,
+        # otherwise ball_track indices no longer match global frame indices (multi-scene bug).
+        if valid_frame_set is not None and i not in valid_frame_set:
+            if frames:
+                flush_pending(pending_start if pending_start is not None else i)
+                pending_start = None
+            ball_track.append((None, None))
+            homography_matrices.append(None)
+            kps_court.append(None)
+            player_top.append(None)
+            player_bottom.append(None)
+            continue
+
+        if not frames:
+            pending_start = i
+        frames.append(frame)
+
+        if len(frames) == batch_size:
+            flush_pending(pending_start if pending_start is not None else i)
+            pending_start = None
+
+    if frames:
+        flush_pending(pending_start if pending_start is not None else max(0, total_frames - len(frames)))
+        pending_start = None
         cleanup_memory(device)
 
     # Container metadata can report more frames than we actually read; keep per-frame arrays aligned.
