@@ -15,6 +15,7 @@ from src.models.homography_matrices import HomographyMatrices
 from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.speed import Speed
 from src.models.player_positions import PlayerPositions
+from src.models.rally_stats import RallyStats
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
 
@@ -96,6 +97,15 @@ def save_bounces_in_db(task_id: int, bounces: dict, serve_frames: set = None):
     oid = _owner_id_for_task(task_id)
     with Session(Engine.instance()) as session:
         session.add(Bounces(task_id=task_id, bounces=json.dumps(processed_bounces), owner_id=oid))
+        session.commit()
+
+
+def save_rally_stats_in_db(task_id: int, rallies: list):
+    oid = _owner_id_for_task(task_id)
+    with Session(Engine.instance()) as session:
+        session.add(
+            RallyStats(task_id=task_id, rallies=json.dumps(rallies), owner_id=oid),
+        )
         session.commit()
 
 
