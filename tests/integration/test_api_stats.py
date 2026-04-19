@@ -84,6 +84,15 @@ class TestServeStats:
 
 
 @pytest.mark.integration
+class TestRallyStats:
+    """Test GET /rally_stats/{task_id}."""
+
+    def test_rally_stats_missing_task_returns_404(self, client):
+        r = client.get("/rally_stats/999999")
+        assert r.status_code == 404
+
+
+@pytest.mark.integration
 class TestPlayerHeatmaps:
     """Test GET /player_heatmaps/{task_id}."""
 

@@ -36,6 +36,7 @@ from src.models import (
 import src.models.homography_matrices  # noqa: F401
 import src.models.model_metrics  # noqa: F401
 import src.models.player_heatmap_data  # noqa: F401
+import src.models.rally_stats  # noqa: F401
 import src.models.shot_annotation  # noqa: F401
 
 # Create tables once at load so app lifespan (requeue tasks) can run

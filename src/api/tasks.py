@@ -16,6 +16,7 @@ from src.models.ball_track import BallTrack
 from src.models.bounces import Bounces
 from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.player_positions import PlayerPositions
+from src.models.rally_stats import RallyStats
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
@@ -441,6 +442,11 @@ def delete_task(
         player_positions = session.exec(select(PlayerPositions).where(PlayerPositions.task_id == task_id)).first()
         if player_positions:
             session.delete(player_positions)
+            records_deleted += 1
+
+        rally_stats = session.exec(select(RallyStats).where(RallyStats.task_id == task_id)).first()
+        if rally_stats:
+            session.delete(rally_stats)
             records_deleted += 1
 
         session.delete(task)

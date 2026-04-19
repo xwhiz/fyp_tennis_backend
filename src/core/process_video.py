@@ -25,6 +25,7 @@ from src.db.utils import (
     save_heatmap_data_in_db,
     save_homography_matrices_in_db,
     save_player_positions_in_db,
+    save_rally_stats_in_db,
     save_speed_in_db,
     save_thumbnail_in_db,
     save_video_paths_in_db,
@@ -71,6 +72,30 @@ def get_valid_scenes(court_detector, video_path, scenes):
         else:
             print(f"[INFO]: Scene [{start}, {end}] - no court (skipped)")
     return valid_scenes
+
+
+def build_rally_stats(valid_scenes: list[list[int]], bounce_frames: set[int]) -> list[dict]:
+    """
+    One rally per valid scene. Bounces belong to a scene iff scene_start <= frame < scene_end
+    (same half-open range as serve detection). First bounce is the serve; last bounce is the last shot.
+    """
+    rallies: list[dict] = []
+    for scene_index, (start, end) in enumerate(valid_scenes):
+        in_scene = sorted(b for b in bounce_frames if start <= b < end)
+        serve_bounce = in_scene[0] if in_scene else None
+        last_bounce = in_scene[-1] if in_scene else None
+        rallies.append(
+            {
+                "scene_index": scene_index,
+                "start_frame": start,
+                "end_frame": end,
+                "bounce_frames": in_scene,
+                "serve_bounce_frame": serve_bounce,
+                "last_bounce_frame": last_bounce,
+                "shot_count": len(in_scene),
+            },
+        )
+    return rallies
 
 
 def get_detections_from_frames(ball_detector, court_detector, person_detector, frames, task_id=None, current_frame=0, total_frames=1):
@@ -498,9 +523,12 @@ def process_video(
                 break
     print(f"[INFO]: {len(serve_frames)} serves detected at frames: {sorted(serve_frames)}")
 
+    rally_list = build_rally_stats(valid_scenes, bounces)
+
     if task_id is not None:
         save_ball_track_in_db(task_id, transformed_track)
         save_bounces_in_db(task_id, {index: transformed_track[index] for index in bounces}, serve_frames)
+        save_rally_stats_in_db(task_id, rally_list)
         save_player_positions_in_db(task_id, player_top, player_bottom)
 
     # Clean up after saving to DB

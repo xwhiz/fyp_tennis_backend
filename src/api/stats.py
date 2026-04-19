@@ -17,6 +17,7 @@ from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.homography_matrices import HomographyMatrices
 from src.models.player_heatmap_data import PlayerHeatmapData
 from src.models.player_positions import PlayerPositions
+from src.models.rally_stats import RallyStats
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
 from src.models.video_paths import VideoPaths
@@ -28,6 +29,21 @@ from src.schemas.thumbnail import ThumbnailSchema
 from src.schemas.video_paths import VideoPathsSchema
 
 router = APIRouter(tags=["stats"])
+
+
+def _rally_stats_payload_from_row(rallies_value) -> dict:
+    if isinstance(rallies_value, str):
+        rallies = json.loads(rallies_value)
+    else:
+        rallies = rallies_value or []
+    return {"rallies": rallies, "total_rallies": len(rallies)}
+
+
+def _rally_stats_addendum(session, task_id: int) -> dict:
+    row = session.exec(select(RallyStats).where(RallyStats.task_id == task_id)).first()
+    if row is None:
+        return {"rallies": [], "total_rallies": 0}
+    return _rally_stats_payload_from_row(row.rallies)
 
 
 @router.get("/get_video_paths/{task_id}")
@@ -160,6 +176,21 @@ async def get_thumbnail(
     return thumbnail_dict if not is_api else {"success": True, "data": thumbnail_dict}
 
 
+@router.get("/rally_stats/{task_id}")
+async def get_rally_stats(
+    task_id: int,
+    session: SessionDep,
+    is_api: bool = True,
+    auth_ctx: AuthContext = Depends(get_auth_context),
+) -> object:
+    require_task_access(session, task_id, auth_ctx)
+    row = session.exec(select(RallyStats).where(RallyStats.task_id == task_id)).first()
+    if row is None:
+        return None if not is_api else {"success": True, "message": "Rally stats not found"}
+    payload = _rally_stats_payload_from_row(row.rallies)
+    return payload if not is_api else {"success": True, "data": payload}
+
+
 @router.get("/all-stats/{task_id}")
 async def get_all_stats(
     task_id: int,
@@ -174,6 +205,7 @@ async def get_all_stats(
     direction_change_indices = await get_direction_change_indices_api(task_id, session, is_api=False, auth_ctx=auth_ctx)
     player_positions = await get_player_positions(task_id, session, is_api=False, auth_ctx=auth_ctx)
     thumbnail = await get_thumbnail(task_id, session, is_api=False, auth_ctx=auth_ctx)
+    rally_stats = await get_rally_stats(task_id, session, is_api=False, auth_ctx=auth_ctx)
 
     from src.api.tasks import get_task_progress
 
@@ -189,6 +221,7 @@ async def get_all_stats(
             "direction_change_indices": direction_change_indices,
             "player_positions": player_positions,
             "thumbnail": thumbnail,
+            "rally_stats": rally_stats,
         },
         "progress": progress,
     }
@@ -203,18 +236,30 @@ async def get_serve_stats(
     require_task_access(session, task_id, auth_ctx)
     bounces_row = session.exec(select(Bounces).where(Bounces.task_id == task_id)).first()
     if bounces_row is None:
-        return {"success": True, "message": "Bounces not found", "data": {"serves": []}}
+        return {
+            "success": True,
+            "message": "Bounces not found",
+            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
+        }
     bounces_data = json.loads(bounces_row.bounces)
 
     dci_row = session.exec(select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)).first()
     if dci_row is None:
-        return {"success": True, "message": "Direction change indices not found", "data": {"serves": []}}
+        return {
+            "success": True,
+            "message": "Direction change indices not found",
+            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
+        }
     dci_data = json.loads(dci_row.direction_change_indices)
     dc_frames_sorted = sorted(int(k) for k in dci_data.keys())
 
     ball_track_row = session.exec(select(BallTrack).where(BallTrack.task_id == task_id)).first()
     if ball_track_row is None:
-        return {"success": True, "message": "Ball track not found", "data": {"serves": []}}
+        return {
+            "success": True,
+            "message": "Ball track not found",
+            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
+        }
     ball_track_data = json.loads(ball_track_row.ball_track)
 
     serves = []
@@ -257,7 +302,10 @@ async def get_serve_stats(
         )
 
     serves.sort(key=lambda s: s["bounce_frame"])
-    return {"success": True, "data": {"serves": serves}}
+    return {
+        "success": True,
+        "data": {"serves": serves, **_rally_stats_addendum(session, task_id)},
+    }
 
 
 @router.get("/player_heatmaps/{task_id}")
