@@ -1,4 +1,3 @@
-import torchvision
 import cv2
 import torch
 from src.core.court_reference import CourtReference
@@ -6,15 +5,18 @@ from scipy import signal
 import numpy as np
 from scipy.spatial import distance
 from tqdm import tqdm
+from ultralytics import YOLO
 
 
 class PersonDetector:
     def __init__(self, dtype=torch.FloatTensor):
-        self.detection_model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-            weights="FasterRCNN_ResNet50_FPN_Weights.COCO_V1"
+        dtype_name = str(dtype).lower()
+        self.device = torch.device(
+            "cuda" if "cuda" in dtype_name and torch.cuda.is_available() else "cpu"
         )
-        self.detection_model = self.detection_model.to(dtype)
-        self.detection_model.eval()
+        self.detection_model = YOLO("yolo26x.pt")
+        if self.device.type == "cuda":
+            self.detection_model.to("cuda")
         self.dtype = dtype
         self.court_ref = CourtReference()
         self.ref_top_court = self.court_ref.get_court_mask(2)
@@ -25,29 +27,24 @@ class PersonDetector:
         self.counter_bottom = 0
 
     def detect(self, image, person_min_score=0.85):
-        PERSON_LABEL = 1
-        frame_tensor = image.transpose((2, 0, 1)) / 255
-        frame_tensor = (
-            torch.from_numpy(frame_tensor).unsqueeze(0).float().to(self.dtype)
-        )
-
-        with torch.no_grad():
-            preds = self.detection_model(frame_tensor)
+        PERSON_LABEL = 0
+        with torch.inference_mode():
+            preds = self.detection_model(image, verbose=False)[0]
 
         persons_boxes = []
         probs = []
-        for box, label, score in zip(
-            preds[0]["boxes"][:], preds[0]["labels"], preds[0]["scores"]
-        ):
-            if label == PERSON_LABEL and score > person_min_score:
-                persons_boxes.append(box.detach().cpu().numpy())
-                probs.append(score.detach().cpu().numpy())
-        
-        # Clean up GPU tensors immediately
-        del frame_tensor, preds
-        if isinstance(self.dtype, torch.cuda.FloatTensor) or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available() and str(self.dtype).startswith('cuda')):
+        if preds.boxes is not None and len(preds.boxes) > 0:
+            boxes = preds.boxes.xyxy.detach().cpu().numpy()
+            labels = preds.boxes.cls.detach().cpu().numpy().astype(np.int32)
+            scores = preds.boxes.conf.detach().cpu().numpy()
+            for box, label, score in zip(boxes, labels, scores):
+                if label == PERSON_LABEL and score > person_min_score:
+                    persons_boxes.append(np.asarray(box, dtype=np.float32))
+                    probs.append(float(score))
+
+        if self.device.type == "cuda":
             torch.cuda.empty_cache()
-        
+
         return persons_boxes, probs
 
     def detect_top_and_bottom_players(self, image, inv_matrix, filter_players=False):
@@ -60,7 +57,7 @@ class PersonDetector:
         )
         person_bboxes_top, person_bboxes_bottom = [], []
 
-        bboxes, probs = self.detect(image, person_min_score=0.85)
+        bboxes, probs = self.detect(image, person_min_score=0.5)
         if len(bboxes) > 0:
             person_points = [
                 [int((bbox[2] + bbox[0]) / 2), int(bbox[3])] for bbox in bboxes
@@ -127,7 +124,7 @@ class PersonDetector:
             
             # Periodic memory cleanup for large batches
             if num_frame > 0 and num_frame % 50 == 0:
-                if isinstance(self.dtype, torch.cuda.FloatTensor) or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available() and str(self.dtype).startswith('cuda')):
+                if self.device.type == "cuda":
                     torch.cuda.empty_cache()
         
         return persons_top, persons_bottom

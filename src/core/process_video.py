@@ -40,6 +40,17 @@ ref_top_court = court_ref.get_court_mask(2)
 ref_bottom_court = court_ref.get_court_mask(1)
 
 
+def _normalize_fps(fps_raw) -> float:
+    """CAP_PROP_FPS is often 0 or garbage for some containers; writers need a positive rate."""
+    try:
+        f = float(fps_raw)
+    except (TypeError, ValueError):
+        return 30.0
+    if f <= 0 or f > 240:
+        return 30.0
+    return f
+
+
 def cleanup_memory(device):
     """Explicitly clean up GPU and CPU memory"""
     if device == "cuda" and torch.cuda.is_available():
@@ -176,7 +187,7 @@ def get_detections_from_video(
         cap = cv2.VideoCapture(video_path)
         should_release_cap = True
     
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = _normalize_fps(cap.get(cv2.CAP_PROP_FPS))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Adaptive batch sizing for large videos
@@ -191,57 +202,17 @@ def get_detections_from_video(
     # Get device from ball_detector for memory cleanup
     device = getattr(ball_detector, 'device', 'cpu')
     
-    frames = []
+    frames: list = []
     batch_count = 0
-    # Track how many valid frames we've processed so far (for progress reporting)
-    valid_frames_processed = 0
-    
-    for i in tqdm(range(total_frames)):
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Global index of frames[0] while building a batch (for progress + ordering)
+    pending_start: Optional[int] = None
 
-        # Skip non-game frames: append placeholders without running detectors
-        if valid_frame_set is not None and i not in valid_frame_set:
-            ball_track.append((None, None))
-            homography_matrices.append(None)
-            kps_court.append(None)
-            player_top.append(None)
-            player_bottom.append(None)
-            continue
-
-        frames.append(frame)
-
-        if len(frames) == batch_size:
-            (
-                batch_ball_track,
-                batch_homography_matrices,
-                batch_kps_court,
-                batch_players_top,
-                batch_players_bottom,
-            ) = get_detections_from_frames(
-                ball_detector, court_detector, person_detector, frames,
-                task_id=task_id, current_frame=i - batch_size + 1, total_frames=total_frames
-            )
-            ball_track.extend(batch_ball_track)
-            homography_matrices.extend(batch_homography_matrices)
-            kps_court.extend(batch_kps_court)
-            player_top.extend(batch_players_top)
-            player_bottom.extend(batch_players_bottom)
-            
-            # Clean up batch data
-            del frames
-            del batch_ball_track, batch_homography_matrices, batch_kps_court
-            del batch_players_top, batch_players_bottom
-            
-            # Memory cleanup every batch for large videos, every 5 batches for smaller ones
-            batch_count += 1
-            if total_frames > 50000 or batch_count % 5 == 0:
-                cleanup_memory(device)
-            
-            frames = []
-
-    if frames:
+    def flush_pending(anchor_idx: int) -> None:
+        """Run detectors on buffered valid frames and append in global frame order."""
+        nonlocal ball_track, homography_matrices, kps_court, player_top, player_bottom
+        nonlocal batch_count, frames
+        if not frames:
+            return
         (
             batch_ball_track,
             batch_homography_matrices,
@@ -249,21 +220,74 @@ def get_detections_from_video(
             batch_players_top,
             batch_players_bottom,
         ) = get_detections_from_frames(
-            ball_detector, court_detector, person_detector, frames,
-            task_id=task_id, current_frame=total_frames - len(frames), total_frames=total_frames
+            ball_detector,
+            court_detector,
+            person_detector,
+            frames,
+            task_id=task_id,
+            current_frame=anchor_idx,
+            total_frames=total_frames,
         )
-
-        ball_track.extend(batch_ball_track[: len(frames)])
-        homography_matrices.extend(batch_homography_matrices[: len(frames)])
-        kps_court.extend(batch_kps_court[: len(frames)])
-        player_top.extend(batch_players_top[: len(frames)])
-        player_bottom.extend(batch_players_bottom[: len(frames)])
-        
-        # Clean up remaining batch data
-        del frames
+        n = len(frames)
+        ball_track.extend(batch_ball_track[:n])
+        homography_matrices.extend(batch_homography_matrices[:n])
+        kps_court.extend(batch_kps_court[:n])
+        player_top.extend(batch_players_top[:n])
+        player_bottom.extend(batch_players_bottom[:n])
         del batch_ball_track, batch_homography_matrices, batch_kps_court
         del batch_players_top, batch_players_bottom
+        frames.clear()
+        batch_count += 1
+        if total_frames > 50000 or batch_count % 5 == 0:
+            cleanup_memory(device)
+
+    for i in tqdm(range(total_frames)):
+        ret, frame = cap.read()
+        if not ret:
+            if frames:
+                flush_pending(pending_start if pending_start is not None else i)
+                pending_start = None
+            break
+
+        # Gaps between valid scenes: must flush buffered valid frames *before* placeholders,
+        # otherwise ball_track indices no longer match global frame indices (multi-scene bug).
+        if valid_frame_set is not None and i not in valid_frame_set:
+            if frames:
+                flush_pending(pending_start if pending_start is not None else i)
+                pending_start = None
+            ball_track.append((None, None))
+            homography_matrices.append(None)
+            kps_court.append(None)
+            player_top.append(None)
+            player_bottom.append(None)
+            continue
+
+        if not frames:
+            pending_start = i
+        frames.append(frame)
+
+        if len(frames) == batch_size:
+            flush_pending(pending_start if pending_start is not None else i)
+            pending_start = None
+
+    if frames:
+        flush_pending(pending_start if pending_start is not None else max(0, total_frames - len(frames)))
+        pending_start = None
         cleanup_memory(device)
+
+    # Container metadata can report more frames than we actually read; keep per-frame arrays aligned.
+    if len(ball_track) < total_frames:
+        missing = total_frames - len(ball_track)
+        print(
+            f"[WARN]: Ball track length {len(ball_track)} < reported frame count {total_frames}; "
+            f"padding {missing} empty frame(s)."
+        )
+        for _ in range(missing):
+            ball_track.append((None, None))
+            homography_matrices.append(None)
+            kps_court.append(None)
+            player_top.append(None)
+            player_bottom.append(None)
 
     # Only release if we created the capture object
     if should_release_cap:
@@ -410,7 +434,9 @@ def process_video(
         update_task_status(task_id, "processing", round(0.1, 3), "Loading video")
 
     input_video_capture = cv2.VideoCapture(video_path)
-    fps = input_video_capture.get(cv2.CAP_PROP_FPS)
+    if not input_video_capture.isOpened():
+        raise RuntimeError(f"Could not open video for processing: {video_path}")
+    fps = _normalize_fps(input_video_capture.get(cv2.CAP_PROP_FPS))
     total_frames = int(input_video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"[INFO]: number of frames: {total_frames}")
     
@@ -432,6 +458,14 @@ def process_video(
             valid_scenes=valid_scenes,
         )
     )
+
+    # Release before the annotation pass. Seeking the same capture back to frame 0 is unreliable for
+    # many H.264/MP4 files (broken or misaligned reads), which yields raw video with no visible overlays.
+    input_video_capture.release()
+    input_video_capture = cv2.VideoCapture(video_path)
+    if not input_video_capture.isOpened():
+        raise RuntimeError(f"Could not reopen video for annotation pass: {video_path}")
+    fps = _normalize_fps(input_video_capture.get(cv2.CAP_PROP_FPS))
     
     # Memory cleanup after detection
     cleanup_memory(device)
@@ -558,6 +592,11 @@ def process_video(
         fps,
         (1280, 720),
     )
+    if not output_video_writer.isOpened():
+        raise RuntimeError(
+            f"Could not open VideoWriter for {output_path} (fps={fps}). "
+            "Verify OpenCV is built with ffmpeg/GStreamer and the output directory exists."
+        )
 
     # Minimap dimensions
     width_minimap = 166
@@ -570,9 +609,15 @@ def process_video(
     valid_frame_set = set()
     for start, end in valid_scenes:
         valid_frame_set.update(range(start, end))
-
-    # Reset video capture to beginning for output generation
-    input_video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    print(
+        f"[INFO]: Annotation: {len(valid_frame_set)} frame(s) inside valid_scenes; "
+        f"ball_track length {len(ball_track)}; fps={fps}"
+    )
+    if not valid_frame_set:
+        print(
+            "[WARN]: valid_scenes is empty — output video will have no ball/minimap/speed overlay "
+            "(raw passthrough only)."
+        )
 
     for i in range(total_frames):
         ret, frame = input_video_capture.read()
@@ -595,7 +640,7 @@ def process_video(
             continue
 
         # Draw ball on main frame
-        if ball_track[i][0] is not None:
+        if i < len(ball_track) and ball_track[i][0] is not None:
             if i in direction_change_indices:
                 frame = cv2.circle(
                     frame,
@@ -617,7 +662,12 @@ def process_video(
         minimap_frame = minimap.copy()
 
         # Draw ball tracking points on minimap
-        if ball_track[i][0] is not None and homography_matrices[i] is not None:
+        if (
+            i < len(ball_track)
+            and ball_track[i][0] is not None
+            and i < len(homography_matrices)
+            and homography_matrices[i] is not None
+        ):
             ball_point = transformed_track[i]
             minimap_frame = cv2.circle(
                 minimap_frame,
@@ -630,7 +680,9 @@ def process_video(
         # Draw bounces on minimap as they occur (progressive)
         if (
             i in bounces
+            and i < len(homography_matrices)
             and homography_matrices[i] is not None
+            and i < len(ball_track)
             and ball_track[i][0] is not None
         ):
             ball_point = transformed_track[i]
@@ -651,11 +703,11 @@ def process_video(
             )
 
         # Draw player positions on minimap
-        inv_mat = homography_matrices[i]
+        inv_mat = homography_matrices[i] if i < len(homography_matrices) else None
         if inv_mat is not None:
             for player, color in [
-                (player_top[i], (0, 0, 255)),
-                (player_bottom[i], (255, 0, 0)),
+                (player_top[i] if i < len(player_top) else None, (0, 0, 255)),
+                (player_bottom[i] if i < len(player_bottom) else None, (255, 0, 0)),
             ]:
                 if player is not None:
                     foot_point = np.array(player[1], dtype=np.float32).reshape(1, 1, 2)
@@ -713,6 +765,11 @@ def process_video(
         fps,
         (w, h),
     )
+    if not minimap_out.isOpened():
+        raise RuntimeError(
+            f"Could not open VideoWriter for minimap {minimap_path} (fps={fps}). "
+            "Verify OpenCV video backend and output directory."
+        )
     if task_id is not None:
         update_task_status(task_id, "processing", round(0.98, 3), "Creating minimap video")
     for i in range(len(transformed_track) - 1):
@@ -738,7 +795,9 @@ def process_video(
                 color,
                 2,
             )
-            minimap_out.write(minimap_copy)
+        # Always write one frame per step — previously we only wrote inside the if-branch, producing
+        # a truncated or unplayable minimap when many frames had no ball.
+        minimap_out.write(minimap_copy)
 
         minimap = minimap_copy.copy()
         
