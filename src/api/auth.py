@@ -4,6 +4,7 @@ from sqlmodel import select
 from src.dependencies.auth import AuthContext, get_auth_context
 from src.db.utils import SessionDep
 from src.models.user import User
+from src.utils.at_tag import allocate_unique_at_tag, display_at_tag
 from src.schemas.auth import (
     ForgotPasswordRequest,
     RefreshTokenRequest,
@@ -36,10 +37,16 @@ def sign_up(payload: SignUpRequest, session: SessionDep):
         consent=payload.consent,
     )
     new_user.set_password(payload.password)
+    new_user.at_tag = allocate_unique_at_tag(session, new_user.email)
 
     session.add(new_user)
     session.commit()
-    return success_response("Account created successfully")
+    session.refresh(new_user)
+
+    return success_response(
+        "Account created successfully",
+        {"atTag": display_at_tag(new_user.at_tag)},
+    )
 
 
 @router.post("/sign-in")

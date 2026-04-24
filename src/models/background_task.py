@@ -28,3 +28,9 @@ class BackgroundTask(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
+    opponent_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )

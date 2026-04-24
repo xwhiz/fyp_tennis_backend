@@ -16,6 +16,7 @@ from src.db.utils import (
 )
 from src.models.background_task import BackgroundTask
 from src.models.user import User, UserRole
+from src.utils.at_tag import allocate_unique_at_tag
 
 
 def _create_user_and_task(session: Session) -> tuple[str, int]:
@@ -30,6 +31,7 @@ def _create_user_and_task(session: Session) -> tuple[str, int]:
         role=UserRole.USER,
     )
     user.set_password("secret")
+    user.at_tag = allocate_unique_at_tag(session, user.email)
     session.add(user)
     session.commit()
     session.refresh(user)

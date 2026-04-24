@@ -4,10 +4,14 @@ import os
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import select
 
-from src.core.utils import classify_serve_type, generate_player_heatmap
+from src.core.utils import (
+    classify_serve_type,
+    generate_player_heatmap,
+    serve_player_from_bounce_court,
+)
 from src.db.utils import SessionDep, save_heatmap_data_in_db
 from src.dependencies.auth import AuthContext, get_auth_context
 from src.dependencies.ownership import require_task_access
@@ -27,6 +31,13 @@ from src.schemas.direction_change_indices import DirectionChangeIndicesSchema
 from src.schemas.player_positions import PlayerPositionsSchema
 from src.schemas.thumbnail import ThumbnailSchema
 from src.schemas.video_paths import VideoPathsSchema
+from src.services.stats_players import (
+    build_player_displays,
+    heatmap_paths_for_task,
+    serve_summary_counts,
+    split_positions_for_players,
+    split_speed_by_hitter,
+)
 
 router = APIRouter(tags=["stats"])
 
@@ -37,6 +48,10 @@ def _rally_stats_payload_from_row(rallies_value) -> dict:
     else:
         rallies = rallies_value or []
     return {"rallies": rallies, "total_rallies": len(rallies)}
+
+
+def _json_value(value):
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def _rally_stats_addendum(session, task_id: int) -> dict:
@@ -68,6 +83,7 @@ async def get_speed_stats(
     task_id: int,
     session: SessionDep,
     is_api: bool = True,
+    grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
     require_task_access(session, task_id, auth_ctx)
@@ -77,7 +93,10 @@ async def get_speed_stats(
     if speed_stats is None:
         return None if not is_api else {"success": True, "message": "Speed stats not found"}
 
-    data = json.loads(speed_stats.speeds)
+    data = _json_value(speed_stats.speeds)
+    if grouped and is_api:
+        p1, p2, unassigned = split_speed_by_hitter(data)
+        return {"success": True, "data": {"p1": p1, "p2": p2, "unassigned": unassigned}}
     return data if not is_api else {"success": True, "data": data}
 
 
@@ -94,7 +113,7 @@ async def get_ball_track(
     if ball_track is None:
         return None if not is_api else {"success": True, "message": "Ball track not found"}
 
-    ball_track.ball_track = json.loads(ball_track.ball_track)
+    ball_track.ball_track = _json_value(ball_track.ball_track)
     ball_track_dict = BallTrackSchema.model_validate(ball_track).model_dump()
     return ball_track_dict if not is_api else {"success": True, "data": ball_track_dict}
 
@@ -112,7 +131,7 @@ async def get_bounces(
     if bounces is None:
         return None if not is_api else {"success": True, "message": "Bounces not found"}
 
-    bounces.bounces = json.loads(bounces.bounces)
+    bounces.bounces = _json_value(bounces.bounces)
     bounces_dict = BouncesSchema.model_validate(bounces).model_dump()
     return bounces_dict if not is_api else {"success": True, "data": bounces_dict}
 
@@ -130,7 +149,7 @@ async def get_direction_change_indices_api(
     if direction_change_indices is None:
         return None if not is_api else {"success": True, "message": "Direction change indices not found"}
 
-    direction_change_indices.direction_change_indices = json.loads(direction_change_indices.direction_change_indices)
+    direction_change_indices.direction_change_indices = _json_value(direction_change_indices.direction_change_indices)
     direction_change_indices_dict = DirectionChangeIndicesSchema.model_validate(direction_change_indices).model_dump()
     return direction_change_indices_dict if not is_api else {"success": True, "data": direction_change_indices_dict}
 
@@ -140,6 +159,7 @@ async def get_player_positions(
     task_id: int,
     session: SessionDep,
     is_api: bool = True,
+    grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
     require_task_access(session, task_id, auth_ctx)
@@ -148,8 +168,11 @@ async def get_player_positions(
     if player_positions is None:
         return None if not is_api else {"success": True, "message": "Player positions not found"}
 
-    player_positions.positions = json.loads(player_positions.positions)
+    player_positions.positions = _json_value(player_positions.positions)
     player_positions_dict = PlayerPositionsSchema.model_validate(player_positions).model_dump()
+    if grouped and is_api:
+        p1, p2 = split_positions_for_players(player_positions_dict)
+        return {"success": True, "data": {"p1": p1, "p2": p2}}
     return player_positions_dict if not is_api else {"success": True, "data": player_positions_dict}
 
 
@@ -197,7 +220,9 @@ async def get_all_stats(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
+    task = require_task_access(session, task_id, auth_ctx)
+    p1_display, p2_display = build_player_displays(session, task)
+
     video_paths = await get_video_paths(task_id, session, is_api=False, auth_ctx=auth_ctx)
     speed_stats = await get_speed_stats(task_id, session, is_api=False, auth_ctx=auth_ctx)
     ball_track = await get_ball_track(task_id, session, is_api=False, auth_ctx=auth_ctx)
@@ -211,17 +236,52 @@ async def get_all_stats(
 
     progress = get_task_progress(task_id, session, is_api=False, auth_ctx=auth_ctx)
 
+    serve_resp = await get_serve_stats(task_id, session, auth_ctx=auth_ctx)
+    serve_data = serve_resp.get("data") or {}
+    serves = serve_data.get("serves") or []
+    p1_serves = [s for s in serves if s.get("server") == "p1"]
+    p2_serves = [s for s in serves if s.get("server") == "p2"]
+
+    sp1, sp2, sun = split_speed_by_hitter(speed_stats if isinstance(speed_stats, dict) else None)
+    p1_pos, p2_pos = split_positions_for_players(player_positions if isinstance(player_positions, dict) else None)
+    ht_top, ht_bottom = heatmap_paths_for_task(task_id)
+
     return {
         "success": True,
         "data": {
-            "video_paths": video_paths,
-            "speed_stats": speed_stats,
-            "ball_track": ball_track,
-            "bounces": bounces,
-            "direction_change_indices": direction_change_indices,
-            "player_positions": player_positions,
-            "thumbnail": thumbnail,
-            "rally_stats": rally_stats,
+            "shared": {
+                "video_paths": video_paths,
+                "ball_track": ball_track,
+                "bounces": bounces,
+                "direction_change_indices": direction_change_indices,
+                "thumbnail": thumbnail,
+                "rally_stats": rally_stats,
+                "speed_stats_unassigned": sun,
+            },
+            "players": {
+                "p1": {
+                    "role": "opponent",
+                    "display": p1_display,
+                    "player_positions": p1_pos,
+                    "player_heatmaps": {"player_heatmap": ht_top},
+                    "speed_stats": sp1,
+                    "serve_stats": {
+                        "serves": p1_serves,
+                        "summary": serve_summary_counts(p1_serves),
+                    },
+                },
+                "p2": {
+                    "role": "owner",
+                    "display": p2_display,
+                    "player_positions": p2_pos,
+                    "player_heatmaps": {"player_heatmap": ht_bottom},
+                    "speed_stats": sp2,
+                    "serve_stats": {
+                        "serves": p2_serves,
+                        "summary": serve_summary_counts(p2_serves),
+                    },
+                },
+            },
         },
         "progress": progress,
     }
@@ -231,6 +291,7 @@ async def get_all_stats(
 async def get_serve_stats(
     task_id: int,
     session: SessionDep,
+    grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
     require_task_access(session, task_id, auth_ctx)
@@ -241,7 +302,7 @@ async def get_serve_stats(
             "message": "Bounces not found",
             "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
         }
-    bounces_data = json.loads(bounces_row.bounces)
+    bounces_data = _json_value(bounces_row.bounces)
 
     dci_row = session.exec(select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)).first()
     if dci_row is None:
@@ -250,7 +311,7 @@ async def get_serve_stats(
             "message": "Direction change indices not found",
             "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
         }
-    dci_data = json.loads(dci_row.direction_change_indices)
+    dci_data = _json_value(dci_row.direction_change_indices)
     dc_frames_sorted = sorted(int(k) for k in dci_data.keys())
 
     ball_track_row = session.exec(select(BallTrack).where(BallTrack.task_id == task_id)).first()
@@ -260,7 +321,7 @@ async def get_serve_stats(
             "message": "Ball track not found",
             "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
         }
-    ball_track_data = json.loads(ball_track_row.ball_track)
+    ball_track_data = _json_value(ball_track_row.ball_track)
 
     serves = []
     for frame_str, bounce_info in bounces_data.items():
@@ -287,9 +348,12 @@ async def get_serve_stats(
                 track_segment.append(point)
 
         serve_type = "unknown"
+        bx = by = None
         if bounce_position and bounce_position[0] is not None and bounce_position[1] is not None:
-            serve_type = classify_serve_type(bounce_position[0], bounce_position[1])
+            bx, by = bounce_position[0], bounce_position[1]
+            serve_type = classify_serve_type(bx, by)
 
+        server = serve_player_from_bounce_court(bx, by)
         serves.append(
             {
                 "bounce_frame": bounce_frame,
@@ -298,13 +362,26 @@ async def get_serve_stats(
                 "origin_position": origin_position,
                 "ball_track": track_segment,
                 "serve_type": serve_type,
+                "server": server,
             },
         )
 
     serves.sort(key=lambda s: s["bounce_frame"])
+    rally = _rally_stats_addendum(session, task_id)
+    if grouped:
+        p1_serves = [s for s in serves if s.get("server") == "p1"]
+        p2_serves = [s for s in serves if s.get("server") == "p2"]
+        return {
+            "success": True,
+            "data": {
+                "shared": rally,
+                "p1": {"serves": p1_serves, "summary": serve_summary_counts(p1_serves)},
+                "p2": {"serves": p2_serves, "summary": serve_summary_counts(p2_serves)},
+            },
+        }
     return {
         "success": True,
-        "data": {"serves": serves, **_rally_stats_addendum(session, task_id)},
+        "data": {"serves": serves, **rally},
     }
 
 
@@ -312,6 +389,7 @@ async def get_serve_stats(
 async def get_player_heatmaps(
     task_id: int,
     session: SessionDep,
+    grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
     require_task_access(session, task_id, auth_ctx)
@@ -321,21 +399,37 @@ async def get_player_heatmaps(
     heatmap_top_files = glob.glob(heatmap_top_path)
     heatmap_bottom_files = glob.glob(heatmap_bottom_path)
     if len(heatmap_top_files) == 0 or len(heatmap_bottom_files) == 0:
-        return {
-            "success": True,
-            "data": {
-                "player_top_heatmap": None,
-                "player_bottom_heatmap": None,
-            },
+        empty = {
+            "player_top_heatmap": None,
+            "player_bottom_heatmap": None,
         }
+        if grouped:
+            return {
+                "success": True,
+                "data": {
+                    "p1": {"player_heatmap": None},
+                    "p2": {"player_heatmap": None},
+                },
+            }
+        return {"success": True, "data": empty}
 
     heatmap_top_file = max(heatmap_top_files, key=os.path.getctime)
     heatmap_bottom_file = max(heatmap_bottom_files, key=os.path.getctime)
+    top_url = f"/{heatmap_top_file}"
+    bottom_url = f"/{heatmap_bottom_file}"
+    if grouped:
+        return {
+            "success": True,
+            "data": {
+                "p1": {"player_heatmap": top_url},
+                "p2": {"player_heatmap": bottom_url},
+            },
+        }
     return {
         "success": True,
         "data": {
-            "player_top_heatmap": f"/{heatmap_top_file}",
-            "player_bottom_heatmap": f"/{heatmap_bottom_file}",
+            "player_top_heatmap": top_url,
+            "player_bottom_heatmap": bottom_url,
         },
     }
 

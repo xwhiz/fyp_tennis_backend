@@ -114,6 +114,28 @@ def classify_serve_type(bounce_x: float, bounce_y: float) -> str:
         return "body_serve"
 
 
+def serve_player_from_bounce_court(bounce_x: float | None, bounce_y: float | None) -> str:
+    """
+    Which player served from court-space bounce (p1 = top half / opponent, p2 = bottom / owner).
+    Uses the same service-box geometry as classify_serve_type.
+    """
+    service_x_min = 423
+    service_x_max = 1242
+    top_service_y_min = 1110
+    top_service_y_max = 1748
+    bottom_service_y_min = 1748
+    bottom_service_y_max = 2386
+    if bounce_x is None or bounce_y is None:
+        return "unknown"
+    in_top = service_x_min <= bounce_x <= service_x_max and top_service_y_min <= bounce_y <= top_service_y_max
+    in_bottom = service_x_min <= bounce_x <= service_x_max and bottom_service_y_min <= bounce_y <= bottom_service_y_max
+    if in_top:
+        return "p1"
+    if in_bottom:
+        return "p2"
+    return "unknown"
+
+
 def generate_player_heatmap(court_points: list[tuple[float, float]], alpha: float = 0.6) -> np.ndarray:
     """
     Generate a heatmap image of player positions overlaid on the court reference.
