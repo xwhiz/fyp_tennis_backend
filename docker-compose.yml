@@ -16,7 +16,7 @@ services:
   api:
     <<: *app-base
     container_name: tennis_api
-    command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000"
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000 --workers 4"
     ports:
       - "7000:7000"
     depends_on:
