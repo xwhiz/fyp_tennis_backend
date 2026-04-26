@@ -9,6 +9,7 @@ class SpeedAt:
     timestamp: float
     distance: float
     shot_type: str
+    hitter: str = "unknown"
 
     def to_dict(self):
         return {
@@ -17,6 +18,7 @@ class SpeedAt:
             "timestamp": self.timestamp,
             "distance": self.distance,
             "shot_type": self.shot_type,
+            "hitter": self.hitter,
         }
 
     def to_json(self):

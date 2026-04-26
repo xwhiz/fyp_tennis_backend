@@ -30,6 +30,8 @@ class User(Base):
     player_height: Mapped[float | None] = mapped_column("playerHeight", Float, nullable=True)
     dominant_hand: Mapped[str] = mapped_column("dominantHand", String(16), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    at_tag: Mapped[str] = mapped_column("atTag", String(64), nullable=False, unique=True, index=True)
+    profile_image_path: Mapped[str | None] = mapped_column("profileImagePath", String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column("passwordHash", String(255), nullable=False)
     consent: Mapped[bool] = mapped_column(Boolean, nullable=False)
     role: Mapped[UserRole] = mapped_column(
@@ -63,10 +65,15 @@ class User(Base):
         )
 
     def to_profile_dict(self) -> dict[str, str | float | None]:
+        from src.utils.at_tag import display_at_tag
+        from src.utils.profile_image import profile_image_url
+
         return {
             "firstName": self.first_name,
             "lastName": self.last_name,
             "playerHeight": self.player_height,
             "dominantHand": self.dominant_hand,
             "email": self.email,
+            "atTag": display_at_tag(self.at_tag),
+            "profileImageUrl": profile_image_url(self.profile_image_path),
         }

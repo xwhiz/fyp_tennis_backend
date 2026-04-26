@@ -38,6 +38,7 @@ import src.models.model_metrics  # noqa: F401
 import src.models.player_heatmap_data  # noqa: F401
 import src.models.rally_stats  # noqa: F401
 import src.models.shot_annotation  # noqa: F401
+import src.models.friend_relation  # noqa: F401
 
 # Create tables once at load so app lifespan (requeue tasks) can run
 Base.metadata.create_all(engine)
@@ -60,6 +61,7 @@ def auth_headers(_db_tables):
     from src.db.engine import Engine
     from src.models.user import User, UserRole
     from src.services.jwt_service import create_access_token
+    from src.utils.at_tag import allocate_unique_at_tag
 
     with Session(Engine.instance()) as session:
         test_admin = session.exec(
@@ -76,6 +78,7 @@ def auth_headers(_db_tables):
                 role=UserRole.ADMIN,
             )
             test_admin.set_password("admin123")
+            test_admin.at_tag = allocate_unique_at_tag(session, test_admin.email)
             session.add(test_admin)
             session.commit()
             session.refresh(test_admin)
@@ -108,6 +111,7 @@ def client_regular_user(_db_tables):
     from src.main import app
     from src.models.user import User, UserRole
     from src.services.jwt_service import create_access_token
+    from src.utils.at_tag import allocate_unique_at_tag
 
     with Session(Engine.instance()) as session:
         uid = str(uuid.uuid4())
@@ -121,6 +125,7 @@ def client_regular_user(_db_tables):
             role=UserRole.USER,
         )
         reg.set_password("password")
+        reg.at_tag = allocate_unique_at_tag(session, reg.email)
         session.add(reg)
         session.commit()
         session.refresh(reg)
@@ -157,6 +162,7 @@ def sample_task_id(_db_tables):
     from src.db.engine import Engine
     from src.models.background_task import BackgroundTask
     from src.models.user import User, UserRole
+    from src.utils.at_tag import allocate_unique_at_tag
 
     with Session(Engine.instance()) as session:
         admin = session.exec(select(User).where(User.email == "admin@example.com")).first()
@@ -171,6 +177,7 @@ def sample_task_id(_db_tables):
                 role=UserRole.ADMIN,
             )
             admin.set_password("admin123")
+            admin.at_tag = allocate_unique_at_tag(session, admin.email)
             session.add(admin)
             session.commit()
             session.refresh(admin)

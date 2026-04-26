@@ -41,6 +41,24 @@ ref_top_court = court_ref.get_court_mask(2)
 ref_bottom_court = court_ref.get_court_mask(1)
 
 
+def infer_hitter_for_speed(sources, destination) -> Literal["p1", "p2", "unknown"]:
+    """p1 = top-court player (opponent), p2 = bottom-court player (owner)."""
+    if not sources or destination is None or destination[0] is None or destination[1] is None:
+        return "unknown"
+    net_y = court_ref.net[0][1]
+    src_in_top_court = sum(s[1] < net_y for s in sources) > len(sources) / 2
+    src_in_bottom_court = sum(s[1] > net_y for s in sources) > len(sources) / 2
+    dst_in_top_court = destination[1] < net_y
+    dst_in_bottom_court = destination[1] > net_y
+    if (src_in_top_court and dst_in_top_court) or (src_in_bottom_court and dst_in_bottom_court):
+        return "unknown"
+    if src_in_top_court and dst_in_bottom_court:
+        return "p1"
+    if src_in_bottom_court and dst_in_top_court:
+        return "p2"
+    return "unknown"
+
+
 def _normalize_fps(fps_raw) -> float:
     """CAP_PROP_FPS is often 0 or garbage for some containers; writers need a positive rate."""
     try:
@@ -594,12 +612,14 @@ def process_video(
         time_difference = (
             bounce_index - max(source_indices, key=lambda x: x[0])[0]
         ) / float(fps)
+        hitter = infer_hitter_for_speed(sources, destination)
         speed_before_bounce[bounce_index] = SpeedAt(
             speed=(meter_distance / time_difference) * 3.6,
             time_diff=time_difference,
             timestamp=bounce_index / float(fps),
             distance=meter_distance,
             shot_type=shot_type,
+            hitter=hitter,
         )
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)

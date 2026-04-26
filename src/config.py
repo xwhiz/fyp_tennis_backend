@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     
     # Upload Settings
     upload_chunk_size: int = 20 * 1024 * 1024  # 20MB in bytes (default: 20971520)
+    profile_image_dir: str = "./uploads/profile_images"
 
     # JWT Auth
     jwt_secret: str = "change-me-in-env"

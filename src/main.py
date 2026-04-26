@@ -8,11 +8,14 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 
 from src.api.auth import router as auth_router
+from src.api.friend import router as friend_router
+from src.api.friends import router as friends_router
 from src.api.misc import router as misc_router
 from src.api.stats import router as stats_router
 from src.api.stream import router as stream_router
 from src.api.tasks import router as tasks_router
 from src.api.user import router as user_router
+from src.api.users_search import router as users_search_router
 from src.celery.worker import process_video_task
 from src.config import settings
 from src.db.engine import Engine
@@ -56,6 +59,8 @@ async def lifespan(app: FastAPI):
 openapi_tags = [
     {"name": "auth", "description": "Authentication"},
     {"name": "user", "description": "User Profile"},
+    {"name": "users", "description": "User search"},
+    {"name": "friends", "description": "Friends"},
     {"name": "tasks", "description": "Tasks"},
     {"name": "stats", "description": "Stats"},
     {"name": "stream", "description": "Streaming"},
@@ -109,6 +114,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 app.include_router(auth_router)
 app.include_router(user_router)
+app.include_router(users_search_router)
+app.include_router(friends_router)
+app.include_router(friend_router)
 app.include_router(tasks_router)
 app.include_router(stats_router)
 app.include_router(stream_router)

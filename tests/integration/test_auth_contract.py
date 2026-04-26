@@ -6,6 +6,7 @@ from src.db.engine import Engine
 from src.main import app
 from src.models.user import User, UserRole
 from src.services.jwt_service import create_access_token
+from src.utils.at_tag import allocate_unique_at_tag
 
 
 @pytest.mark.integration
@@ -25,10 +26,10 @@ class TestAuthContract:
                 },
             )
         assert response.status_code == 200
-        assert response.json() == {
-            "success": True,
-            "message": "Account created successfully",
-        }
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["message"] == "Account created successfully"
+        assert payload["data"]["atTag"] == "@john"
 
     def test_sign_in_success_returns_token(self):
         with TestClient(app) as client:
@@ -192,6 +193,7 @@ class TestAuthMiddlewareAndRbac:
                 role=UserRole.ANNOTATOR,
             )
             annotator.set_password("secret123")
+            annotator.at_tag = allocate_unique_at_tag(session, annotator.email)
             session.add(annotator)
             session.commit()
             session.refresh(annotator)
@@ -221,6 +223,7 @@ class TestAuthMiddlewareAndRbac:
                 role=UserRole.USER,
             )
             regular.set_password("secret123")
+            regular.at_tag = allocate_unique_at_tag(session, regular.email)
             session.add(regular)
             session.commit()
             session.refresh(regular)

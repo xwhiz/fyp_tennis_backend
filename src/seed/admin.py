@@ -3,6 +3,7 @@ from sqlmodel import Session, select
 from src.config import settings
 from src.db.engine import Engine
 from src.models.user import User, UserRole
+from src.utils.at_tag import allocate_unique_at_tag
 
 
 def seed_admin_user() -> None:
@@ -28,5 +29,6 @@ def seed_admin_user() -> None:
             role=UserRole.ADMIN,
         )
         admin_user.set_password(settings.admin_password)
+        admin_user.at_tag = allocate_unique_at_tag(session, admin_user.email)
         session.add(admin_user)
         session.commit()

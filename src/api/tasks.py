@@ -3,7 +3,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import Session, select
+from sqlmodel import Session, or_, select
 
 from src.celery.worker import get_celery, process_video_task
 from src.config import settings
@@ -19,10 +19,40 @@ from src.models.player_positions import PlayerPositions
 from src.models.rally_stats import RallyStats
 from src.models.speed import Speed
 from src.models.thumbnail import Thumbnail
+from src.models.user import User
 from src.models.video_paths import VideoPaths
 from src.schemas.process_video_response import ProcessVideoResponse
+from src.utils.at_tag import display_at_tag, normalize_at_tag_input
 
 router = APIRouter(tags=["tasks"])
+
+
+def _resolve_opponent_id(session: Session, owner_id: str, opponent_at_tag: Optional[str]) -> Optional[str]:
+    if opponent_at_tag is None or not str(opponent_at_tag).strip():
+        return None
+    tag = normalize_at_tag_input(opponent_at_tag)
+    if not tag:
+        return None
+    opp = session.exec(select(User).where(User.at_tag == tag)).first()
+    if opp is None:
+        raise HTTPException(status_code=404, detail="Opponent not found")
+    if opp.id == owner_id:
+        raise HTTPException(status_code=400, detail="Cannot set yourself as the opponent")
+    return opp.id
+
+
+def _opponent_payload(session: Session, opponent_id: Optional[str]) -> Optional[dict]:
+    if not opponent_id:
+        return None
+    u = session.exec(select(User).where(User.id == opponent_id)).first()
+    if u is None:
+        return None
+    return {
+        "id": u.id,
+        "atTag": display_at_tag(u.at_tag),
+        "firstName": u.first_name,
+        "lastName": u.last_name,
+    }
 
 
 @router.get("/all_tasks")
@@ -32,24 +62,45 @@ def get_all_tasks(
 ):
     statement = select(BackgroundTask)
     if not is_admin(auth_ctx):
-        statement = statement.where(BackgroundTask.owner_id == auth_ctx.user_id)
+        statement = statement.where(
+            or_(
+                BackgroundTask.owner_id == auth_ctx.user_id,
+                BackgroundTask.opponent_id == auth_ctx.user_id,
+            ),
+        )
     tasks = session.exec(statement).all()
-    tasks = [
-        {
-            "id": str(task.id),
-            "name": task.name,
-            "status": task.status,
-            "description": task.description,
-            "created_at": task.created_at,
-            "updated_at": task.updated_at,
-            "total_upload_size": task.total_upload_size,
-            "uploaded_size": task.uploaded_size,
-            "is_uploaded_fully": task.is_uploaded_fully,
-            "progress": task.progress,
-        }
-        for task in tasks
-    ]
-    return {"success": True, "data": tasks}
+    opp_ids = {t.opponent_id for t in tasks if t.opponent_id}
+    opp_users = {}
+    if opp_ids:
+        for u in session.exec(select(User).where(User.id.in_(opp_ids))).all():
+            opp_users[u.id] = u
+    out = []
+    for task in tasks:
+        o = None
+        if task.opponent_id and task.opponent_id in opp_users:
+            ou = opp_users[task.opponent_id]
+            o = {
+                "id": ou.id,
+                "atTag": display_at_tag(ou.at_tag),
+                "firstName": ou.first_name,
+                "lastName": ou.last_name,
+            }
+        out.append(
+            {
+                "id": str(task.id),
+                "name": task.name,
+                "status": task.status,
+                "description": task.description,
+                "created_at": task.created_at,
+                "updated_at": task.updated_at,
+                "total_upload_size": task.total_upload_size,
+                "uploaded_size": task.uploaded_size,
+                "is_uploaded_fully": task.is_uploaded_fully,
+                "progress": task.progress,
+                "opponent": o,
+            },
+        )
+    return {"success": True, "data": out}
 
 
 @router.get("/task_progress/{process_id}")
@@ -83,6 +134,7 @@ def get_task_progress(
             if task.total_upload_size > 0
             else 0
         ),
+        "opponent": _opponent_payload(session, task.opponent_id),
     }
     return task_dict if not is_api else {"success": True, "data": task_dict}
 
@@ -94,10 +146,18 @@ async def handle_process_video_request(
     total_size: int = Form(int),
     duplicate_task: bool = Form(False),
     task_id: Optional[int] = Form(None),
+    opponent_at_tag: Optional[str] = Form(None),
+    opponentAtTag: Optional[str] = Form(None),
+    opponent_tag: Optional[str] = Form(None),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> ProcessVideoResponse:
     if duplicate_task and task_id is None:
         raise HTTPException(status_code=400, detail="task_id required when duplicate_task is True")
+
+    # Accept snake_case and camelCase aliases from different clients.
+    opponent_tag_value = opponent_at_tag or opponentAtTag or opponent_tag
+    with Session(Engine.instance()) as _op_session:
+        resolved_opponent_id = _resolve_opponent_id(_op_session, auth_ctx.user_id, opponent_tag_value)
 
     if duplicate_task and task_id is not None:
         with Session(Engine.instance()) as session:
@@ -129,6 +189,7 @@ async def handle_process_video_request(
                     created_at=datetime.now(),
                     updated_at=datetime.now(),
                     owner_id=auth_ctx.user_id,
+                    opponent_id=resolved_opponent_id,
                 )
                 session.add(new_task)
                 session.commit()
@@ -153,6 +214,11 @@ async def handle_process_video_request(
                 not existing_task.is_uploaded_fully
                 and existing_task.total_upload_size >= chunk_size
             )
+            # If caller provided/changed opponent for an existing multipart task, persist it.
+            if opponent_tag_value is not None:
+                existing_task.opponent_id = resolved_opponent_id
+                session.add(existing_task)
+                session.commit()
             return {
                 "success": True,
                 "message": "Duplicate task found. Using existing task.",
@@ -204,6 +270,7 @@ async def handle_process_video_request(
                 created_at=datetime.now(),
                 updated_at=datetime.now(),
                 owner_id=auth_ctx.user_id,
+                opponent_id=resolved_opponent_id,
             )
             session.add(task)
             session.commit()
@@ -241,6 +308,7 @@ async def handle_process_video_request(
             created_at=datetime.now(),
             updated_at=datetime.now(),
             owner_id=auth_ctx.user_id,
+            opponent_id=resolved_opponent_id,
         )
         session.add(task)
         session.commit()
