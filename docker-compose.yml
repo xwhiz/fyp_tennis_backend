@@ -9,14 +9,17 @@ x-app-base: &app-base
   environment:
     UV_PROJECT_ENVIRONMENT: /opt/venv
     DATABASE_URL: ${DATABASE_URL}
+    OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   volumes:
     - .:/app
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
   api:
     <<: *app-base
     container_name: tennis_api
-    command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000"
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn src.main:app --host 0.0.0.0 --port 7000 --workers 4"
     ports:
       - "7000:7000"
     depends_on:
@@ -44,7 +47,7 @@ services:
       - rabbitmq
 
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     platform: linux/amd64
     container_name: tennis_postgres
     environment:
@@ -61,7 +64,7 @@ services:
     platform: linux/amd64
     container_name: tennis_adminer
     ports:
-      - "8080:8080"
+      - "9000:8080"
     environment:
       ADMINER_DEFAULT_SERVER: postgres
     depends_on:

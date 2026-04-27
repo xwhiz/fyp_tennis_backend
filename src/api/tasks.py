@@ -25,6 +25,8 @@ from src.schemas.process_video_response import ProcessVideoResponse
 from src.utils.at_tag import display_at_tag, normalize_at_tag_input
 
 router = APIRouter(tags=["tasks"])
+UPLOAD_ROOT = settings.upload_root_dir
+UPLOAD_TEMP_ROOT = os.path.join(UPLOAD_ROOT, "temp")
 
 
 def _resolve_opponent_id(session: Session, owner_id: str, opponent_at_tag: Optional[str]) -> Optional[str]:
@@ -170,8 +172,8 @@ async def handle_process_video_request(
             if not is_admin(auth_ctx) and existing_task.owner_id != auth_ctx.user_id:
                 raise HTTPException(status_code=403, detail="Access denied")
 
-            os.makedirs("./uploads", exist_ok=True)
-            os.makedirs("./uploads/temp", exist_ok=True)
+            os.makedirs(UPLOAD_ROOT, exist_ok=True)
+            os.makedirs(UPLOAD_TEMP_ROOT, exist_ok=True)
             chunk_size = settings.upload_chunk_size
             file_path = existing_task.video_path
             file_name = os.path.basename(file_path) if file_path else video_file.filename
@@ -241,10 +243,10 @@ async def handle_process_video_request(
 
     file_extension = video_file.filename.split(".")[-1] if "." in video_file.filename else "mp4"
     unique_filename = f"{uuid.uuid4()}.{file_extension}"
-    file_path = f"./uploads/{unique_filename}"
+    file_path = os.path.join(UPLOAD_ROOT, unique_filename)
 
-    os.makedirs("./uploads", exist_ok=True)
-    os.makedirs("./uploads/temp", exist_ok=True)
+    os.makedirs(UPLOAD_ROOT, exist_ok=True)
+    os.makedirs(UPLOAD_TEMP_ROOT, exist_ok=True)
 
     if total_size is None:
         content = await video_file.read()
@@ -276,7 +278,7 @@ async def handle_process_video_request(
             session.commit()
             session.refresh(task)
             process_id = str(task.id)
-            temp_dir = f"./uploads/temp/{task.id}"
+            temp_dir = os.path.join(UPLOAD_TEMP_ROOT, str(task.id))
             os.makedirs(temp_dir, exist_ok=True)
             return {
                 "success": True,
@@ -348,7 +350,7 @@ async def upload_chunk(
 
     chunk_content = await chunk_data.read()
     chunk_size = len(chunk_content)
-    temp_dir = f"./uploads/temp/{task_id}"
+    temp_dir = os.path.join(UPLOAD_TEMP_ROOT, str(task_id))
     os.makedirs(temp_dir, exist_ok=True)
     chunk_path = os.path.join(temp_dir, f"chunk_{chunk_number}.part")
     chunk_already_exists = os.path.exists(chunk_path)

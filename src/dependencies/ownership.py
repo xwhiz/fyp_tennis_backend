@@ -4,7 +4,10 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from src.dependencies.auth import AuthContext
+from src.config import settings
 from src.models.background_task import BackgroundTask
+from src.models.chat_session import ChatSession
+from src.models.chat_stream import ChatStream
 from src.models.thumbnail import Thumbnail
 from src.models.user import UserRole
 from src.models.video_paths import VideoPaths
@@ -26,6 +29,38 @@ def require_task_access(session: Session, task_id: int, auth_ctx: AuthContext) -
     ):
         raise HTTPException(status_code=403, detail="Access denied")
     return task
+
+
+def require_chat_session_access(
+    session: Session,
+    session_id: str,
+    auth_ctx: AuthContext,
+) -> ChatSession:
+    chat_session = session.exec(
+        select(ChatSession).where(ChatSession.id == session_id),
+    ).first()
+    if chat_session is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if not is_admin(auth_ctx) and chat_session.user_id != auth_ctx.user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if chat_session.task_id is not None:
+        require_task_access(session, chat_session.task_id, auth_ctx)
+    return chat_session
+
+
+def require_chat_stream_access(
+    session: Session,
+    stream_id: str,
+    auth_ctx: AuthContext,
+) -> ChatStream:
+    chat_stream = session.exec(
+        select(ChatStream).where(ChatStream.id == stream_id),
+    ).first()
+    if chat_stream is None:
+        raise HTTPException(status_code=404, detail="Chat stream not found")
+    if not is_admin(auth_ctx) and chat_stream.user_id != auth_ctx.user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return chat_stream
 
 
 def _normalize_disk_path(path: str) -> str:
@@ -72,7 +107,7 @@ def require_upload_stream_path(session: Session, filename: str, auth_ctx: AuthCo
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if is_admin(auth_ctx):
-        return f"./uploads/{filename}"
+        return os.path.join(settings.upload_root_dir, filename)
 
     for bt in session.exec(
         select(BackgroundTask).where(

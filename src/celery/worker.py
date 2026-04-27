@@ -1,6 +1,7 @@
 import os
 import sys
 import gc
+import asyncio
 import threading
 import torch
 from celery import Celery
@@ -10,7 +11,10 @@ from src.core.bounce_detector import BounceDetector
 from src.core.court_detection_net import CourtDetectorNet
 from src.core.person_detector import PersonDetector
 from src.core.process_video import process_video, cleanup_memory
+from src.db.engine import Engine
+from sqlmodel import Session
 from src.db.utils import update_task_status
+from src.services.rag_pipeline import ingest_document, ingest_game_stats
 
 
 celery = Celery(settings.celery_app_name)
@@ -96,6 +100,7 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
             task_id=task_id,
             name=name,
         )
+        ingest_game_stats_task.delay(int(task_id))
 
         return {
             "success": True,
@@ -113,3 +118,17 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
         # Ensure memory cleanup even if task fails
         cleanup_memory(_device)
         gc.collect()
+
+
+@celery.task(name="ingest_document_task", bind=True)
+def ingest_document_task(self, document_id: int):
+    with Session(Engine.instance()) as session:
+        asyncio.run(ingest_document(session, document_id))
+    return {"success": True, "document_id": document_id}
+
+
+@celery.task(name="ingest_game_stats_task", bind=True)
+def ingest_game_stats_task(self, task_id: int):
+    with Session(Engine.instance()) as session:
+        asyncio.run(ingest_game_stats(session, task_id))
+    return {"success": True, "task_id": task_id}
