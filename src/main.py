@@ -7,7 +7,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 
+from src.api.admin import router as admin_router
 from src.api.auth import router as auth_router
+from src.api.chat import router as chat_router
 from src.api.friend import router as friend_router
 from src.api.friends import router as friends_router
 from src.api.misc import router as misc_router
@@ -57,7 +59,9 @@ async def lifespan(app: FastAPI):
 
 
 openapi_tags = [
+    {"name": "admin", "description": "Admin dashboard"},
     {"name": "auth", "description": "Authentication"},
+    {"name": "chat", "description": "Chat and RAG"},
     {"name": "user", "description": "User Profile"},
     {"name": "users", "description": "User search"},
     {"name": "friends", "description": "Friends"},
@@ -77,10 +81,13 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-os.makedirs("uploads", exist_ok=True)
+os.makedirs(settings.upload_root_dir, exist_ok=True)
+os.makedirs(settings.profile_image_dir, exist_ok=True)
+os.makedirs(settings.knowledge_document_dir, exist_ok=True)
+os.makedirs(settings.chat_attachment_dir, exist_ok=True)
 os.makedirs("output", exist_ok=True)
 app.mount("/output", StaticFiles(directory="output"), name="output")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=settings.upload_root_dir), name="uploads")
 
 
 @app.exception_handler(RequestValidationError)
@@ -113,6 +120,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(chat_router)
 app.include_router(user_router)
 app.include_router(users_search_router)
 app.include_router(friends_router)

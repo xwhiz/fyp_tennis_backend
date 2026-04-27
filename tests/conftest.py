@@ -13,6 +13,10 @@ os.environ["ADMIN_EMAIL"] = "admin@example.com"
 os.environ["ADMIN_PASSWORD"] = "admin123"
 os.environ["ADMIN_FIRST_NAME"] = "Admin"
 os.environ["ADMIN_LAST_NAME"] = "User"
+os.environ["UPLOAD_ROOT_DIR"] = "/tmp/acevision_test_uploads"
+os.environ["PROFILE_IMAGE_DIR"] = "/tmp/acevision_test_uploads/profile_images"
+os.environ["KNOWLEDGE_DOCUMENT_DIR"] = "/tmp/acevision_test_uploads/knowledge_documents"
+os.environ["CHAT_ATTACHMENT_DIR"] = "/tmp/acevision_test_uploads/chat_attachments"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,6 +43,15 @@ import src.models.player_heatmap_data  # noqa: F401
 import src.models.rally_stats  # noqa: F401
 import src.models.shot_annotation  # noqa: F401
 import src.models.friend_relation  # noqa: F401
+import src.models.chat_attachment  # noqa: F401
+import src.models.chat_message  # noqa: F401
+import src.models.chat_session  # noqa: F401
+import src.models.chat_stream  # noqa: F401
+import src.models.document_chunk  # noqa: F401
+import src.models.game_stat_embedding  # noqa: F401
+import src.models.knowledge_document  # noqa: F401
+import src.models.system_prompt  # noqa: F401
+import src.models.user_memory_entry  # noqa: F401
 
 # Create tables once at load so app lifespan (requeue tasks) can run
 Base.metadata.create_all(engine)

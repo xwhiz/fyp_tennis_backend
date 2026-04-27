@@ -31,13 +31,27 @@ class Settings(BaseSettings):
     video_batch_size: int = 200
     
     # Upload Settings
+    upload_root_dir: str = "./uploads"
     upload_chunk_size: int = 20 * 1024 * 1024  # 20MB in bytes (default: 20971520)
     profile_image_dir: str = "./uploads/profile_images"
+    knowledge_document_dir: str = "./uploads/knowledge_documents"
+    chat_attachment_dir: str = "./uploads/chat_attachments"
 
     # JWT Auth
     jwt_secret: str = "change-me-in-env"
     jwt_algorithm: str = "HS256"
     jwt_expires_in_hours: int = 72
+    admin_session_cookie_name: str = "acevision_admin_session"
+
+    # Ollama / RAG
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_chat_model: str = "qwen3-vl:8b"
+    ollama_embedding_model: str = "qwen3-embedding:8b"
+    ollama_timeout_seconds: int = 180
+    embedding_dimensions: int = 4096
+    rag_chunk_size: int = 1200
+    rag_chunk_overlap: int = 200
+    rag_retrieval_top_k: int = 5
 
     # Admin Seeder
     admin_email: str = "admin@example.com"

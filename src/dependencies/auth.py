@@ -20,14 +20,7 @@ class AuthContext:
     user: User
 
 
-def get_auth_context(
-    session: SessionDep,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> AuthContext:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    token = credentials.credentials
+def resolve_auth_context_from_token(session: SessionDep, token: str) -> AuthContext:
     if not token:
         raise HTTPException(status_code=401, detail="Session expired")
 
@@ -51,3 +44,12 @@ def get_auth_context(
         role=role_value,
         user=user,
     )
+
+
+def get_auth_context(
+    session: SessionDep,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> AuthContext:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Session expired")
+    return resolve_auth_context_from_token(session, credentials.credentials)

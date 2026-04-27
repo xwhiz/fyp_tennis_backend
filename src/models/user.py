@@ -5,7 +5,7 @@ import uuid
 from enum import Enum
 
 import bcrypt
-from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, Float, String, func
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, Float, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
@@ -32,6 +32,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     at_tag: Mapped[str] = mapped_column("atTag", String(64), nullable=False, unique=True, index=True)
     profile_image_path: Mapped[str | None] = mapped_column("profileImagePath", String(255), nullable=True)
+    context_summary: Mapped[str | None] = mapped_column("contextSummary", Text, nullable=True)
     password_hash: Mapped[str] = mapped_column("passwordHash", String(255), nullable=False)
     consent: Mapped[bool] = mapped_column(Boolean, nullable=False)
     role: Mapped[UserRole] = mapped_column(
@@ -76,4 +77,5 @@ class User(Base):
             "email": self.email,
             "atTag": display_at_tag(self.at_tag),
             "profileImageUrl": profile_image_url(self.profile_image_path),
+            "contextSummary": self.context_summary,
         }
