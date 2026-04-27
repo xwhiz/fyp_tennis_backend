@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlmodel import select
 
 from src.config import settings
@@ -26,6 +28,12 @@ from src.models.user import User
 from src.services.ollama_service import stream_chat
 from src.services.rag_pipeline import ensure_storage_dirs, ingest_game_stats, refresh_user_memory, retrieve_context
 from src.services.rag_text import summarize_title_from_message
+from src.utils.pagination import (
+    PaginationParams,
+    latest_window_bounds,
+    pagination_dependency,
+    pagination_metadata,
+)
 from src.utils.response import success_response
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -190,19 +198,27 @@ async def add_chat_message(
 @router.get("/history")
 def chat_history(
     session: SessionDep,
+    pagination: Annotated[PaginationParams, Depends(pagination_dependency(default_limit=20, max_limit=100))],
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
+    total = session.exec(
+        select(func.count())
+        .select_from(ChatSession)
+        .where(ChatSession.user_id == auth_ctx.user_id),
+    ).one()
     sessions = session.exec(
         select(ChatSession)
         .where(ChatSession.user_id == auth_ctx.user_id)
-        .order_by(ChatSession.updated_at.desc()),
+        .order_by(ChatSession.updated_at.desc(), ChatSession.id.desc())
+        .offset(pagination.start)
+        .limit(pagination.limit),
     ).all()
     data = []
     for row in sessions:
         last_message = session.exec(
             select(ChatMessage)
             .where(ChatMessage.session_id == row.id)
-            .order_by(ChatMessage.created_at.desc()),
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()),
         ).first()
         last_attachment = session.exec(
             select(ChatAttachment)
@@ -210,7 +226,7 @@ def chat_history(
                 ChatAttachment.session_id == row.id,
                 ChatAttachment.attachment_type == "image",
             )
-            .order_by(ChatAttachment.created_at.desc()),
+            .order_by(ChatAttachment.created_at.desc(), ChatAttachment.id.desc()),
         ).first()
         data.append(
             {
@@ -228,24 +244,56 @@ def chat_history(
                 "updatedAt": row.updated_at,
             },
         )
-    return success_response("Chat history fetched", {"sessions": data, "contextSummary": auth_ctx.user.context_summary})
+    return success_response(
+        "Chat history fetched",
+        {
+            "sessions": data,
+            "contextSummary": auth_ctx.user.context_summary,
+            "pagination": pagination_metadata(
+                start=pagination.start,
+                limit=pagination.limit,
+                total=total,
+                returned=len(data),
+            ),
+        },
+    )
 
 
 @router.get("/history/{session_id}")
 def chat_history_detail(
     session_id: str,
     session: SessionDep,
+    pagination: Annotated[PaginationParams, Depends(pagination_dependency(default_limit=10, max_limit=100))],
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
     chat_session = require_chat_session_access(session, session_id, auth_ctx)
-    messages = session.exec(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == chat_session.id)
-        .order_by(ChatMessage.created_at.asc()),
-    ).all()
-    attachments = session.exec(
-        select(ChatAttachment).where(ChatAttachment.session_id == chat_session.id),
-    ).all()
+    total = session.exec(
+        select(func.count())
+        .select_from(ChatMessage)
+        .where(ChatMessage.session_id == chat_session.id),
+    ).one()
+    offset, window_limit = latest_window_bounds(total=total, start=pagination.start, limit=pagination.limit)
+
+    messages = []
+    attachments = []
+    if window_limit > 0:
+        messages = session.exec(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == chat_session.id)
+            .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            .offset(offset)
+            .limit(window_limit),
+        ).all()
+        message_ids = [message.id for message in messages]
+        if message_ids:
+            attachments = session.exec(
+                select(ChatAttachment)
+                .where(
+                    ChatAttachment.session_id == chat_session.id,
+                    ChatAttachment.message_id.in_(message_ids),
+                )
+                .order_by(ChatAttachment.created_at.asc(), ChatAttachment.id.asc()),
+            ).all()
     return success_response(
         "Chat session fetched",
         {
@@ -257,6 +305,12 @@ def chat_history_detail(
                 "lastStreamId": chat_session.last_stream_id,
             },
             "messages": [_serialize_message(message, attachments) for message in messages],
+            "pagination": pagination_metadata(
+                start=pagination.start,
+                limit=pagination.limit,
+                total=total,
+                returned=len(messages),
+            ),
         },
     )
 

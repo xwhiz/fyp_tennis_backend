@@ -241,4 +241,4 @@ class TestAuthMiddlewareAndRbac:
         assert response.status_code == 200
         payload = response.json()
         assert payload.get("success") is True
-        assert isinstance(payload.get("data"), list)
+        assert isinstance(payload.get("data", {}).get("tasks"), list)

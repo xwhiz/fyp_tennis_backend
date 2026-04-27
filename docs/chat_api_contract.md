@@ -59,6 +59,10 @@ Response:
 
 Returns the current user's chat session list.
 
+Query params:
+- `start` (integer, optional, default `0`): zero-based offset into the latest-first session list
+- `limit` (integer, optional, default `20`, max `100`): number of sessions to return
+
 Response shape:
 
 ```json
@@ -78,14 +82,33 @@ Response shape:
         "updatedAt": "2026-04-27T00:00:00Z"
       }
     ],
-    "contextSummary": "Readable user memory summary"
+    "contextSummary": "Readable user memory summary",
+    "pagination": {
+      "start": 0,
+      "limit": 20,
+      "returned": 1,
+      "total": 1,
+      "hasMore": false
+    }
   }
 }
 ```
 
+Ordering:
+- sessions are selected latest-first by `updatedAt`
+
 ### `GET /chat/history/{session_id}`
 
-Returns full transcript data for one existing session.
+Returns transcript data for one existing session.
+
+Query params:
+- `start` (integer, optional, default `0`): zero-based offset from the latest side of the chat history
+- `limit` (integer, optional, default `10`, max `100`): number of messages to return
+
+Message window behavior:
+- `start=0&limit=10` returns the latest 10 chat items in the session
+- `start=10&limit=10` returns the next older 10 chat items
+- selected messages are returned in chronological order within the window so the UI can render them top-to-bottom without re-sorting
 
 Response shape:
 
@@ -153,7 +176,14 @@ Response shape:
         "attachments": [],
         "createdAt": "2026-04-27T00:00:10Z"
       }
-    ]
+    ],
+    "pagination": {
+      "start": 0,
+      "limit": 10,
+      "returned": 2,
+      "total": 2,
+      "hasMore": false
+    }
   }
 }
 ```

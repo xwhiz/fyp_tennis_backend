@@ -128,6 +128,11 @@ App behavior:
 
 Returns the authenticated user's chat session list.
 
+Query params:
+
+- `start`: `int`, optional, default `0`
+- `limit`: `int`, optional, default `20`, max `100`
+
 Example response:
 
 ```json
@@ -147,7 +152,14 @@ Example response:
         "updatedAt": "2026-04-27T00:00:00Z"
       }
     ],
-    "contextSummary": "Readable user memory summary"
+    "contextSummary": "Readable user memory summary",
+    "pagination": {
+      "start": 0,
+      "limit": 20,
+      "returned": 1,
+      "total": 1,
+      "hasMore": false
+    }
   }
 }
 ```
@@ -162,7 +174,18 @@ Use this for:
 
 `GET /chat/history/{session_id}`
 
-Returns the full transcript and session metadata for one chat session.
+Returns a paginated transcript window and session metadata for one chat session.
+
+Query params:
+
+- `start`: `int`, optional, default `0`
+- `limit`: `int`, optional, default `10`, max `100`
+
+Window semantics:
+
+- `start=0&limit=10` returns the latest 10 chat items in that session
+- `start=10&limit=10` returns the next older 10 chat items
+- the selected messages are returned in chronological order within that window
 
 Example response:
 
@@ -230,7 +253,14 @@ Example response:
         "attachments": [],
         "createdAt": "2026-04-27T00:00:10Z"
       }
-    ]
+    ],
+    "pagination": {
+      "start": 0,
+      "limit": 10,
+      "returned": 2,
+      "total": 2,
+      "hasMore": false
+    }
   }
 }
 ```
@@ -332,6 +362,7 @@ class ChatHistoryResponse {
 class ChatHistoryData {
   final List<ChatSessionSummary> sessions;
   final String? contextSummary;
+  final PaginationMeta pagination;
 }
 
 class ChatSessionSummary {
@@ -354,6 +385,7 @@ class ChatSessionDetailResponse {
 class ChatSessionDetailData {
   final ChatSessionInfo session;
   final List<ChatMessageItem> messages;
+  final PaginationMeta pagination;
 }
 
 class ChatSessionInfo {
@@ -387,6 +419,14 @@ class ChatAttachmentItem {
 class ChatSseEvent {
   final String event;
   final Map<String, dynamic> data;
+}
+
+class PaginationMeta {
+  final int start;
+  final int limit;
+  final int returned;
+  final int total;
+  final bool hasMore;
 }
 ```
 
@@ -436,9 +476,10 @@ class ChatSourceItem {
 
 ### Chat list
 
-1. Call `GET /chat/history`
+1. Call `GET /chat/history?start=0&limit=20`
 2. Render `sessions`
 3. Optionally show `contextSummary` in a memory or profile context area
+4. If `pagination.hasMore` is `true`, request the next page with `start += returned`
 
 ## Multipart Field Names
 
@@ -461,7 +502,6 @@ These are true for the current backend implementation:
 - attachment and PDF links are static URLs under `/uploads/...`
 - only image attachments are supported in chat
 - no websocket support, only SSE
-- no history pagination yet
 - stream replay is basic for completed streams
 
 ## Retrieval Source Rules

@@ -29,12 +29,26 @@ class TestUserSearch:
         body = r.json()
         assert body["success"] is True
         results = body["data"]["results"]
+        assert body["data"]["pagination"]["start"] == 0
+        assert body["data"]["pagination"]["limit"] == 20
+        assert body["data"]["pagination"]["returned"] == len(results)
         assert any("admin" in (x.get("atTag") or "").lower() for x in results)
 
     def test_search_respects_limit(self, client_regular_user):
         r = client_regular_user.get("/users/search?q=ad&limit=1")
         assert r.status_code == 200
-        assert len(r.json()["data"]["results"]) <= 1
+        payload = r.json()["data"]
+        assert len(payload["results"]) <= 1
+        assert payload["pagination"]["limit"] == 1
+        assert payload["pagination"]["returned"] == len(payload["results"])
+
+    def test_search_supports_start_offset(self, client_regular_user):
+        r = client_regular_user.get("/users/search?q=ad&start=1&limit=1")
+        assert r.status_code == 200
+        payload = r.json()["data"]
+        assert payload["pagination"]["start"] == 1
+        assert payload["pagination"]["limit"] == 1
+        assert payload["pagination"]["returned"] == len(payload["results"])
 
 
 @pytest.mark.integration
@@ -199,5 +213,5 @@ class TestProfilePhotosAndFriendProfile:
             c.headers["Authorization"] = f"Bearer {token}"
             r = c.get("/all_tasks")
             assert r.status_code == 200
-            ids = {x["id"] for x in r.json()["data"]}
+            ids = {x["id"] for x in r.json()["data"]["tasks"]}
             assert task_id in ids

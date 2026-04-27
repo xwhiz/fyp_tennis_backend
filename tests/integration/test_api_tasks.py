@@ -1,7 +1,14 @@
 """Integration tests for task endpoints: all_tasks, task_progress, process_video, upload_chunk, delete_task."""
 import io
-import pytest
+from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
+
+import pytest
+from sqlmodel import Session, select
+
+from src.db.engine import Engine
+from src.models.background_task import BackgroundTask
+from src.models.user import User
 
 
 @pytest.mark.integration
@@ -17,7 +24,85 @@ class TestAllTasks:
         data = r.json()
         assert data.get("success") is True
         assert "data" in data
-        assert isinstance(data["data"], list)
+        assert isinstance(data["data"]["tasks"], list)
+        assert data["data"]["pagination"]["start"] == 0
+        assert data["data"]["pagination"]["limit"] == 20
+        assert data["data"]["pagination"]["returned"] == len(data["data"]["tasks"])
+
+    def test_all_tasks_supports_pagination_and_latest_first_order(self, client):
+        with Session(Engine.instance()) as session:
+            admin = session.exec(select(User).where(User.email == "admin@example.com")).first()
+            base_time = datetime.now()
+            created_ids = []
+            for idx in range(3):
+                task = BackgroundTask(
+                    progress=100.0,
+                    name=f"ordered-task-{idx}",
+                    status="completed",
+                    video_path=f"./uploads/ordered_{idx}.mp4",
+                    description="ordered",
+                    total_upload_size=100,
+                    uploaded_size=100,
+                    is_uploaded_fully=True,
+                    created_at=base_time + timedelta(minutes=idx),
+                    updated_at=base_time + timedelta(minutes=idx),
+                    owner_id=admin.id,
+                )
+                session.add(task)
+                session.commit()
+                session.refresh(task)
+                created_ids.append(str(task.id))
+
+        first_page = client.get("/all_tasks?start=0&limit=2")
+        assert first_page.status_code == 200
+        first_payload = first_page.json()["data"]
+        first_ids = [task["id"] for task in first_payload["tasks"]]
+        assert created_ids[-1] in first_ids
+        assert created_ids[-2] in first_ids
+        assert first_payload["pagination"]["start"] == 0
+        assert first_payload["pagination"]["limit"] == 2
+        assert first_payload["pagination"]["returned"] == len(first_payload["tasks"])
+        assert first_payload["pagination"]["hasMore"] is True
+
+        second_page = client.get("/all_tasks?start=2&limit=2")
+        assert second_page.status_code == 200
+        second_payload = second_page.json()["data"]
+        second_ids = [task["id"] for task in second_payload["tasks"]]
+        assert created_ids[-3] in second_ids
+        assert second_payload["pagination"]["start"] == 2
+        assert second_payload["pagination"]["limit"] == 2
+        assert second_payload["pagination"]["returned"] == len(second_payload["tasks"])
+
+    def test_all_tasks_search_supports_query_and_pagination(self, client):
+        with Session(Engine.instance()) as session:
+            admin = session.exec(select(User).where(User.email == "admin@example.com")).first()
+            base_time = datetime.now()
+            for idx in range(3):
+                task = BackgroundTask(
+                    progress=100.0,
+                    name=f"serve-search-task-{idx}",
+                    status="completed",
+                    video_path=f"./uploads/search_{idx}.mp4",
+                    description="searchable task",
+                    total_upload_size=100,
+                    uploaded_size=100,
+                    is_uploaded_fully=True,
+                    created_at=base_time + timedelta(minutes=idx),
+                    updated_at=base_time + timedelta(minutes=idx),
+                    owner_id=admin.id,
+                )
+                session.add(task)
+            session.commit()
+
+        response = client.get("/all_tasks/search?q=serve-search&start=0&limit=2")
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert len(payload["tasks"]) == 2
+        assert all("serve-search" in task["name"] for task in payload["tasks"])
+        assert payload["pagination"]["start"] == 0
+        assert payload["pagination"]["limit"] == 2
+        assert payload["pagination"]["returned"] == 2
+        assert payload["pagination"]["hasMore"] is True
 
 
 @pytest.mark.integration
@@ -77,6 +162,15 @@ class TestProcessVideo:
         assert "data" in data
         assert "process_id" in data["data"]
         assert data["data"].get("requires_multipart") is False
+
+        # Avoid leaving a pending task behind; app startup requeues pending work.
+        with Session(Engine.instance()) as session:
+            task = session.exec(
+                select(BackgroundTask).where(BackgroundTask.id == int(data["data"]["process_id"])),
+            ).first()
+            task.status = "completed"
+            session.add(task)
+            session.commit()
 
 
 @pytest.mark.integration

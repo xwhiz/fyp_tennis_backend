@@ -21,3 +21,5 @@ class TestSmoke:
         data = r.json()
         assert "success" in data
         assert "data" in data
+        assert "tasks" in data["data"]
+        assert "pagination" in data["data"]
