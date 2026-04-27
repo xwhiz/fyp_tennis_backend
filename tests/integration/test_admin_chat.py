@@ -1,12 +1,15 @@
 import io
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from src.db.engine import Engine
 from src.main import app
+from src.models.chat_message import ChatMessage
+from src.models.chat_session import ChatSession
 from src.models.user import User, UserRole
 from src.utils.at_tag import allocate_unique_at_tag
 
@@ -142,6 +145,9 @@ class TestChatApi:
         assert len(history_payload["data"]["sessions"]) >= 1
         assert history_payload["data"]["sessions"][0]["id"] == session_id
         assert history_payload["data"]["sessions"][0]["lastAttachmentImageUrl"].startswith("/uploads/chat_attachments/")
+        assert history_payload["data"]["pagination"]["start"] == 0
+        assert history_payload["data"]["pagination"]["limit"] == 20
+        assert history_payload["data"]["pagination"]["returned"] == len(history_payload["data"]["sessions"])
 
         detail_response = client.get(f"/chat/history/{session_id}")
         assert detail_response.status_code == 200
@@ -152,3 +158,63 @@ class TestChatApi:
         sources = detail_payload["data"]["messages"][1]["metadata"]["sources"]
         assert sources[0]["title"] == "ITF Rules 2026"
         assert "documentId" not in sources[0]
+        assert detail_payload["data"]["pagination"] == {
+            "start": 0,
+            "limit": 10,
+            "returned": 2,
+            "total": 2,
+            "hasMore": False,
+        }
+
+    def test_chat_history_detail_defaults_to_latest_ten_messages(self, client):
+        with Session(Engine.instance()) as session:
+            admin = session.exec(select(User).where(User.email == "admin@example.com")).first()
+            chat_session = ChatSession(
+                user_id=admin.id,
+                title="Paged chat",
+                status="active",
+            )
+            session.add(chat_session)
+            session.commit()
+            session.refresh(chat_session)
+
+            base_time = datetime.now()
+            for idx in range(12):
+                session.add(
+                    ChatMessage(
+                        session_id=chat_session.id,
+                        role="user" if idx % 2 == 0 else "assistant",
+                        content=f"message-{idx}",
+                        metadata_json={},
+                        created_at=base_time + timedelta(seconds=idx),
+                        updated_at=base_time + timedelta(seconds=idx),
+                    ),
+                )
+            session.commit()
+            chat_session_id = chat_session.id
+
+        first_page = client.get(f"/chat/history/{chat_session_id}")
+        assert first_page.status_code == 200
+        first_payload = first_page.json()["data"]
+        first_contents = [message["content"] for message in first_payload["messages"]]
+        assert first_contents == [f"message-{idx}" for idx in range(2, 12)]
+        assert first_payload["pagination"] == {
+            "start": 0,
+            "limit": 10,
+            "returned": 10,
+            "total": 12,
+            "hasMore": True,
+        }
+
+        second_page = client.get(f"/chat/history/{chat_session_id}?start=10&limit=10")
+        assert second_page.status_code == 200
+        second_payload = second_page.json()["data"]
+        second_contents = [message["content"] for message in second_payload["messages"]]
+        assert second_contents == ["message-0", "message-1"]
+        assert second_payload["pagination"] == {
+            "start": 10,
+            "limit": 10,
+            "returned": 2,
+            "total": 12,
+            "hasMore": False,
+        }

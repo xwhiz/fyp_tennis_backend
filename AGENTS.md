@@ -30,6 +30,11 @@
 - `src/services/`: auth and stats shaping.
 - `src/db/`: engine, sessions, persistence helpers.
 
+## API Pagination Rules
+- New endpoints that return potentially unbounded item lists should support pagination from day one.
+- Use explicit query params in the API contract for list pagination and document their defaults, ordering, and response metadata.
+- If pagination is intentionally omitted for a list-style endpoint, document why the endpoint is intentionally bounded or why additional calls would be unnecessary.
+
 ## ML / File Gotchas
 - Worker/model code expects weight files at repo-relative paths: `src/track_net_weights.pt`, `src/model_tennis_court_det.pt`, `src/ctb_regr_bounce.cbm`, and root `yolo26x.pt`. Run worker/API commands from repo root unless you also update those paths.
 - `src.main` creates and mounts `uploads/` and `output/` as static dirs.

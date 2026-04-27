@@ -1,9 +1,10 @@
 from datetime import datetime
 import os
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import Session, or_, select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from sqlalchemy import func, or_
+from sqlmodel import Session, select
 
 from src.celery.worker import get_celery, process_video_task
 from src.config import settings
@@ -23,6 +24,7 @@ from src.models.user import User
 from src.models.video_paths import VideoPaths
 from src.schemas.process_video_response import ProcessVideoResponse
 from src.utils.at_tag import display_at_tag, normalize_at_tag_input
+from src.utils.pagination import PaginationParams, pagination_dependency, pagination_metadata
 
 router = APIRouter(tags=["tasks"])
 UPLOAD_ROOT = settings.upload_root_dir
@@ -57,52 +59,116 @@ def _opponent_payload(session: Session, opponent_id: Optional[str]) -> Optional[
     }
 
 
-@router.get("/all_tasks")
-def get_all_tasks(
-    session: SessionDep,
-    auth_ctx: AuthContext = Depends(get_auth_context),
-):
-    statement = select(BackgroundTask)
+def _task_visibility_filters(auth_ctx: AuthContext) -> list:
+    filters = []
     if not is_admin(auth_ctx):
-        statement = statement.where(
+        filters.append(
             or_(
                 BackgroundTask.owner_id == auth_ctx.user_id,
                 BackgroundTask.opponent_id == auth_ctx.user_id,
             ),
         )
+    return filters
+
+
+def _task_payload(task: BackgroundTask, opponent: Optional[dict]) -> dict:
+    return {
+        "id": str(task.id),
+        "name": task.name,
+        "status": task.status,
+        "description": task.description,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "total_upload_size": task.total_upload_size,
+        "uploaded_size": task.uploaded_size,
+        "is_uploaded_fully": task.is_uploaded_fully,
+        "progress": task.progress,
+        "opponent": opponent,
+    }
+
+
+def _task_list_response(
+    session: Session,
+    *,
+    pagination: PaginationParams,
+    auth_ctx: AuthContext,
+    query: str | None = None,
+) -> dict:
+    filters = _task_visibility_filters(auth_ctx)
+    if query:
+        term = f"%{query.strip()}%"
+        filters.append(
+            or_(
+                BackgroundTask.name.ilike(term),
+                BackgroundTask.description.ilike(term),
+            ),
+        )
+
+    total_statement = select(func.count()).select_from(BackgroundTask)
+    if filters:
+        total_statement = total_statement.where(*filters)
+    total = session.exec(total_statement).one()
+
+    statement = select(BackgroundTask)
+    if filters:
+        statement = statement.where(*filters)
+    statement = statement.order_by(BackgroundTask.updated_at.desc(), BackgroundTask.id.desc())
+    statement = statement.offset(pagination.start).limit(pagination.limit)
+
     tasks = session.exec(statement).all()
-    opp_ids = {t.opponent_id for t in tasks if t.opponent_id}
+    opp_ids = {task.opponent_id for task in tasks if task.opponent_id}
     opp_users = {}
     if opp_ids:
-        for u in session.exec(select(User).where(User.id.in_(opp_ids))).all():
-            opp_users[u.id] = u
-    out = []
+        for user in session.exec(select(User).where(User.id.in_(opp_ids))).all():
+            opp_users[user.id] = user
+
+    task_items = []
     for task in tasks:
-        o = None
+        opponent = None
         if task.opponent_id and task.opponent_id in opp_users:
-            ou = opp_users[task.opponent_id]
-            o = {
-                "id": ou.id,
-                "atTag": display_at_tag(ou.at_tag),
-                "firstName": ou.first_name,
-                "lastName": ou.last_name,
+            opponent_user = opp_users[task.opponent_id]
+            opponent = {
+                "id": opponent_user.id,
+                "atTag": display_at_tag(opponent_user.at_tag),
+                "firstName": opponent_user.first_name,
+                "lastName": opponent_user.last_name,
             }
-        out.append(
-            {
-                "id": str(task.id),
-                "name": task.name,
-                "status": task.status,
-                "description": task.description,
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-                "total_upload_size": task.total_upload_size,
-                "uploaded_size": task.uploaded_size,
-                "is_uploaded_fully": task.is_uploaded_fully,
-                "progress": task.progress,
-                "opponent": o,
-            },
-        )
-    return {"success": True, "data": out}
+        task_items.append(_task_payload(task, opponent))
+
+    return {
+        "success": True,
+        "data": {
+            "tasks": task_items,
+            "pagination": pagination_metadata(
+                start=pagination.start,
+                limit=pagination.limit,
+                total=total,
+                returned=len(task_items),
+            ),
+        },
+    }
+
+
+@router.get("/all_tasks")
+def get_all_tasks(
+    session: SessionDep,
+    pagination: Annotated[PaginationParams, Depends(pagination_dependency(default_limit=20, max_limit=100))],
+    auth_ctx: AuthContext = Depends(get_auth_context),
+):
+    return _task_list_response(session, pagination=pagination, auth_ctx=auth_ctx)
+
+
+@router.get("/all_tasks/search")
+def search_all_tasks(
+    session: SessionDep,
+    pagination: Annotated[PaginationParams, Depends(pagination_dependency(default_limit=20, max_limit=100))],
+    q: str = Query(..., min_length=1),
+    auth_ctx: AuthContext = Depends(get_auth_context),
+):
+    term = q.strip()
+    if not term:
+        raise HTTPException(status_code=400, detail="Query must not be empty")
+    return _task_list_response(session, pagination=pagination, auth_ctx=auth_ctx, query=term)
 
 
 @router.get("/task_progress/{process_id}")

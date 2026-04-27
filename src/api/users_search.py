@@ -6,6 +6,7 @@ from src.db.utils import SessionDep
 from src.dependencies.auth import AuthContext, get_auth_context
 from src.models.user import User
 from src.utils.at_tag import display_at_tag, mask_email, normalize_at_tag_input
+from src.utils.pagination import pagination_metadata
 from src.utils.response import success_response
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 def search_users(
     session: SessionDep,
     q: str = Query(..., min_length=2),
+    start: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=50),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ):
@@ -54,7 +56,8 @@ def search_users(
         return (t, u.at_tag)
 
     rows.sort(key=rank)
-    rows = rows[:limit]
+    total = len(rows)
+    rows = rows[start : start + limit]
 
     results = [
         {
@@ -66,4 +69,15 @@ def search_users(
         }
         for u in rows
     ]
-    return success_response("Search results", {"results": results})
+    return success_response(
+        "Search results",
+        {
+            "results": results,
+            "pagination": pagination_metadata(
+                start=start,
+                limit=limit,
+                total=total,
+                returned=len(results),
+            ),
+        },
+    )
