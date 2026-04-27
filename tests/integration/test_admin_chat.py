@@ -87,7 +87,24 @@ class TestChatApi:
             return {
                 "system_prompt": "Be concise.",
                 "context_sections": ["Context block"],
-                "sources": [{"type": "document", "documentId": 1}],
+                "sources": [
+                    {
+                        "type": "document",
+                        "title": "ITF Rules 2026",
+                        "pageStart": 4,
+                        "pageEnd": 5,
+                        "pageRange": "4-5",
+                        "lineStart": 1,
+                        "lineEnd": 18,
+                        "viewUrl": "/uploads/knowledge_documents/itf-rules-2026.pdf",
+                        "downloadUrl": "/uploads/knowledge_documents/itf-rules-2026.pdf",
+                    },
+                    {
+                        "type": "user_memory",
+                        "summary": "Recent tennis context",
+                        "source": "chat_session",
+                    },
+                ],
             }
 
         async def fake_refresh_user_memory(session, user, chat_session):
@@ -95,7 +112,11 @@ class TestChatApi:
             session.add(user)
             session.commit()
 
-        start_response = client.post("/chat/start", data={"message": "How can I improve my serve?"})
+        start_response = client.post(
+            "/chat/start",
+            data={"message": "How can I improve my serve?"},
+            files={"image": ("serve.png", io.BytesIO(b"fake-image"), "image/png")},
+        )
         assert start_response.status_code == 200
         start_payload = start_response.json()
         session_id = start_payload["data"]["sessionId"]
@@ -120,9 +141,14 @@ class TestChatApi:
         history_payload = history_response.json()
         assert len(history_payload["data"]["sessions"]) >= 1
         assert history_payload["data"]["sessions"][0]["id"] == session_id
+        assert history_payload["data"]["sessions"][0]["lastAttachmentImageUrl"].startswith("/uploads/chat_attachments/")
 
         detail_response = client.get(f"/chat/history/{session_id}")
         assert detail_response.status_code == 200
         detail_payload = detail_response.json()
         assert len(detail_payload["data"]["messages"]) == 2
+        assert detail_payload["data"]["messages"][0]["attachments"][0]["url"].startswith("/uploads/chat_attachments/")
         assert detail_payload["data"]["messages"][1]["role"] == "assistant"
+        sources = detail_payload["data"]["messages"][1]["metadata"]["sources"]
+        assert sources[0]["title"] == "ITF Rules 2026"
+        assert "documentId" not in sources[0]

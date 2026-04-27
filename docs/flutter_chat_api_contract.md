@@ -143,6 +143,7 @@ Example response:
         "summary": "Recent tennis summary",
         "lastStreamId": "39236941-1015-4065-a488-e068c1473252",
         "lastMessagePreview": "Latest message preview",
+        "lastAttachmentImageUrl": "/uploads/chat_attachments/serve.png",
         "updatedAt": "2026-04-27T00:00:00Z"
       }
     ],
@@ -191,7 +192,10 @@ Example response:
             "type": "image",
             "filename": "serve.png",
             "mimeType": "image/png",
-            "fileSize": 12345
+            "fileSize": 12345,
+            "url": "/uploads/chat_attachments/serve.png",
+            "viewUrl": "/uploads/chat_attachments/serve.png",
+            "downloadUrl": "/uploads/chat_attachments/serve.png"
           }
         ],
         "createdAt": "2026-04-27T00:00:00Z"
@@ -204,7 +208,22 @@ Example response:
           "sources": [
             {
               "type": "document",
-              "documentId": 1
+              "title": "ITF Rules 2026",
+              "governingBody": "ITF",
+              "competition": "Grand Slam",
+              "seasonYear": 2026,
+              "pageStart": 4,
+              "pageEnd": 5,
+              "pageRange": "4-5",
+              "lineStart": 1,
+              "lineEnd": 18,
+              "viewUrl": "/uploads/knowledge_documents/itf-rules-2026.pdf",
+              "downloadUrl": "/uploads/knowledge_documents/itf-rules-2026.pdf"
+            },
+            {
+              "type": "user_memory",
+              "summary": "User has been working on serve placement and movement recovery.",
+              "source": "chat_session"
             }
           ]
         },
@@ -250,7 +269,7 @@ event: started
 data: {"streamId":"39236941-1015-4065-a488-e068c1473252","sessionId":"6675ad43-2b81-4353-bdc1-018f2ecdb0f8"}
 
 event: retrieval
-data: {"sources":[{"type":"document","documentId":1}]}
+data: {"sources":[{"type":"document","title":"ITF Rules 2026","pageRange":"4-5","viewUrl":"/uploads/knowledge_documents/itf-rules-2026.pdf"}]}
 
 event: delta
 data: {"content":"Hello "}
@@ -322,6 +341,7 @@ class ChatSessionSummary {
   final String? summary;
   final String? lastStreamId;
   final String? lastMessagePreview;
+  final String? lastAttachmentImageUrl;
   final DateTime? updatedAt;
 }
 
@@ -359,11 +379,38 @@ class ChatAttachmentItem {
   final String filename;
   final String mimeType;
   final int fileSize;
+  final String url;
+  final String viewUrl;
+  final String downloadUrl;
 }
 
 class ChatSseEvent {
   final String event;
   final Map<String, dynamic> data;
+}
+```
+
+Suggested source model:
+
+```dart
+class ChatSourceItem {
+  final String type;
+  final String? title;
+  final String? governingBody;
+  final String? competition;
+  final int? seasonYear;
+  final int? pageStart;
+  final int? pageEnd;
+  final String? pageRange;
+  final int? lineStart;
+  final int? lineEnd;
+  final String? viewUrl;
+  final String? downloadUrl;
+  final String? summary;
+  final String? source;
+  final int? taskId;
+  final String? playerScope;
+  final String? sourceType;
 }
 ```
 
@@ -411,11 +458,18 @@ For `POST /chat/{session_id}/messages`:
 These are true for the current backend implementation:
 
 - admin prompt and document management is server-rendered HTML, not JSON API
-- attachment metadata is returned, but there is no dedicated attachment download endpoint yet
+- attachment and PDF links are static URLs under `/uploads/...`
 - only image attachments are supported in chat
 - no websocket support, only SSE
 - no history pagination yet
 - stream replay is basic for completed streams
+
+## Retrieval Source Rules
+
+- document citations do not return numeric document ids
+- document citations return human-readable metadata instead
+- citations can include page and line ranges for the chunk used in retrieval
+- user memory entries are deduplicated before being returned
 
 ## Useful Backend References
 
