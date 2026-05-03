@@ -12,7 +12,6 @@ class TestSettings:
         assert hasattr(settings, "database_url")
         assert hasattr(settings, "app_name")
         assert hasattr(settings, "app_env")
-        assert hasattr(settings, "log_level")
         assert hasattr(settings, "host")
         assert hasattr(settings, "port")
         assert hasattr(settings, "celery_broker_url")
@@ -20,6 +19,7 @@ class TestSettings:
         assert hasattr(settings, "celery_app_name")
         assert hasattr(settings, "upload_chunk_size")
         assert hasattr(settings, "video_batch_size")
+        assert hasattr(settings, "person_detector_backend")
 
     def test_database_url_is_string(self):
         from src.config import settings

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}AceVision Admin{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-black text-white">
+    <div class="flex min-h-screen">
+      <aside
+        id="admin-sidebar"
+        class="flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 transition-[width] duration-200 ease-out"
+        style="width: var(--sidebar-width, 14rem)"
+      >
+        <div class="flex h-14 items-center justify-between border-b border-zinc-800 px-3">
+          <span id="sidebar-brand" class="truncate text-xs font-semibold uppercase tracking-widest text-green-400"
+            >AceVision</span
+          >
+          <button
+            type="button"
+            id="sidebar-toggle"
+            class="rounded-lg border border-zinc-700 p-1.5 text-zinc-400 hover:bg-zinc-900 hover:text-white"
+            aria-label="Toggle sidebar"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+            </svg>
+          </button>
+        </div>
+        <nav class="flex flex-1 flex-col gap-1 p-2">
+          <a
+            href="/admin/chat"
+            class="sidebar-link rounded-lg px-3 py-2 text-sm {{ 'bg-green-500/15 text-green-300' if active_nav == 'chat' else 'text-zinc-300 hover:bg-zinc-900' }}"
+            >Chat Bot Management</a
+          >
+          <a
+            href="/admin/person-detector"
+            class="sidebar-link rounded-lg px-3 py-2 text-sm {{ 'bg-green-500/15 text-green-300' if active_nav == 'person_detector' else 'text-zinc-300 hover:bg-zinc-900' }}"
+            >Person Detector</a
+          >
+        </nav>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col">
+        <header class="flex h-14 items-center justify-between border-b border-zinc-800 bg-black/80 px-4 backdrop-blur">
+          <h1 class="truncate text-lg font-semibold text-white">{% block page_title %}Admin{% endblock %}</h1>
+          <form method="post" action="/admin/logout">
+            <button
+              class="rounded-xl border border-green-500/60 px-3 py-1.5 text-sm text-green-300 hover:bg-green-500/10"
+            >
+              Logout
+            </button>
+          </form>
+        </header>
+
+        <main class="flex-1 overflow-auto p-4 md:p-6">
+          {% if notice %}
+          <div class="mb-6 rounded-xl border border-green-500/50 bg-green-950/30 px-4 py-3 text-sm text-green-200">
+            {{ notice }}
+          </div>
+          {% endif %} {% block content %}{% endblock %}
+        </main>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var KEY = "acevision_admin_sidebar_collapsed";
+        var aside = document.getElementById("admin-sidebar");
+        var btn = document.getElementById("sidebar-toggle");
+        var brand = document.getElementById("sidebar-brand");
+        var links = document.querySelectorAll(".sidebar-link");
+
+        function collapsed() {
+          return localStorage.getItem(KEY) === "1";
+        }
+
+        function apply() {
+          var c = collapsed();
+          aside.style.setProperty("--sidebar-width", c ? "3.5rem" : "14rem");
+          if (brand) brand.style.display = c ? "none" : "block";
+          links.forEach(function (a) {
+            a.style.display = c ? "none" : "block";
+          });
+        }
+
+        apply();
+        btn.addEventListener("click", function () {
+          localStorage.setItem(KEY, collapsed() ? "0" : "1");
+          apply();
+        });
+      })();
+    </script>
+  </body>
+</html>

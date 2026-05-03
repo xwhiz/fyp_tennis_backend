@@ -1,0 +1,134 @@
+{% extends "admin/base.html" %}
+{% block title %}Chat Bot Management — AceVision Admin{% endblock %}
+{% block page_title %}Chat Bot Management{% endblock %}
+{% block content %}
+<p class="mb-6 text-sm text-zinc-400">Manage prompts, rulebooks, and ingestion state.</p>
+
+<div class="grid gap-6 xl:grid-cols-2">
+  <section class="rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
+    <h2 class="text-xl font-semibold text-white">Custom System Prompts</h2>
+    <p class="mt-2 text-sm text-zinc-400">Active prompts are appended after the built-in system prompt.</p>
+    <form method="post" action="/admin/prompts" class="mt-6 space-y-4">
+      <input
+        type="text"
+        name="name"
+        required
+        placeholder="Prompt name"
+        class="w-full rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+      />
+      <textarea
+        name="content"
+        required
+        rows="6"
+        placeholder="Prompt instructions..."
+        class="w-full rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+      ></textarea>
+      <button class="rounded-xl bg-green-500 px-4 py-3 font-medium text-black hover:bg-green-400">Save Prompt</button>
+    </form>
+
+    <div class="mt-6 space-y-4">
+      {% for prompt in prompts %}
+      <div class="rounded-xl border border-zinc-800 bg-black p-4">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h3 class="font-medium">{{ prompt.name }}</h3>
+            <p class="mt-2 whitespace-pre-wrap text-sm text-zinc-400">{{ prompt.content }}</p>
+          </div>
+          <form method="post" action="/admin/prompts/{{ prompt.id }}/toggle">
+            <button
+              class="rounded-lg px-3 py-2 text-sm font-medium {{ 'bg-green-500 text-black' if prompt.is_active else 'border border-zinc-700 text-zinc-300' }}"
+            >
+              {{ 'Active' if prompt.is_active else 'Inactive' }}
+            </button>
+          </form>
+        </div>
+      </div>
+      {% else %}
+      <p class="text-sm text-zinc-500">No custom prompts yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
+    <h2 class="text-xl font-semibold text-white">Knowledge Documents</h2>
+    <p class="mt-2 text-sm text-zinc-400">Upload tennis rulebooks and competition documents as PDFs.</p>
+    <form method="post" action="/admin/documents" enctype="multipart/form-data" class="mt-6 space-y-4">
+      <input
+        type="text"
+        name="title"
+        required
+        placeholder="Document title"
+        class="w-full rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+      />
+      <div class="grid gap-4 md:grid-cols-3">
+        <input
+          type="text"
+          name="governing_body"
+          required
+          placeholder="ITF / ATP / WTA"
+          class="rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+        />
+        <input
+          type="text"
+          name="competition"
+          placeholder="Competition"
+          class="rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+        />
+        <input
+          type="number"
+          name="season_year"
+          placeholder="Year"
+          class="rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none focus:border-green-400"
+        />
+      </div>
+      <input
+        type="file"
+        name="pdf_file"
+        accept="application/pdf"
+        required
+        class="block w-full rounded-xl border border-dashed border-zinc-700 bg-black px-4 py-3 text-sm text-zinc-300 file:mr-4 file:rounded-lg file:border-0 file:bg-green-500 file:px-4 file:py-2 file:font-medium file:text-black"
+      />
+      <button class="rounded-xl bg-green-500 px-4 py-3 font-medium text-black hover:bg-green-400">Upload PDF</button>
+    </form>
+
+    <div class="mt-6 space-y-4">
+      {% for document in documents %}
+      <div class="rounded-xl border border-zinc-800 bg-black p-4">
+        <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div class="flex flex-wrap gap-2">
+              <span class="rounded-full bg-zinc-900 px-3 py-1 text-xs text-zinc-300">{{ document.governingBody }}</span>
+              {% if document.seasonYear %}
+              <span class="rounded-full bg-zinc-900 px-3 py-1 text-xs text-zinc-300">{{ document.seasonYear }}</span>
+              {% endif %}
+              <span
+                class="rounded-full px-3 py-1 text-xs {{ 'bg-green-500/15 text-green-300' if document.status == 'completed' else 'bg-zinc-900 text-zinc-300' }}"
+              >
+                {{ document.status }}
+              </span>
+            </div>
+            <h3 class="mt-3 font-medium">{{ document.title }}</h3>
+            <p class="mt-1 text-sm text-zinc-400">
+              {{ document.originalFilename }} {% if document.competition %} • {{ document.competition }}{% endif %} •
+              {{ document.chunkCount }} chunks
+            </p>
+            {% if document.error %}
+            <p class="mt-2 text-sm text-red-300">{{ document.error }}</p>
+            {% endif %}
+          </div>
+          <form method="post" action="/admin/documents/{{ document.id }}/toggle">
+            <button
+              class="rounded-lg px-3 py-2 text-sm font-medium {{ 'bg-green-500 text-black' if document.active else 'border border-zinc-700 text-zinc-300' }}"
+            >
+              {{ 'Active' if document.active else 'Inactive' }}
+            </button>
+          </form>
+        </div>
+      </div>
+      {% else %}
+      <p class="text-sm text-zinc-500">No knowledge documents uploaded yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

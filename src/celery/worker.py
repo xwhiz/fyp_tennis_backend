@@ -9,7 +9,8 @@ from src.config import settings
 from src.core.ball_detector import BallDetector
 from src.core.bounce_detector import BounceDetector
 from src.core.court_detection_net import CourtDetectorNet
-from src.core.person_detector import PersonDetector
+from src.core.person_detector import build_person_detector
+from src.services.runtime_config import get_active_person_detector_backend
 from src.core.process_video import process_video, cleanup_memory
 from src.db.engine import Engine
 from sqlmodel import Session
@@ -48,20 +49,19 @@ celery.conf.worker_concurrency = settings.celery_worker_concurrency  # Number of
 # Module-level variables for models (loaded once per worker process)
 _ball_detector = None
 _court_detector = None
-_person_detector = None
 _bounce_detector = None
+# One cached person detector instance per backend (YOLO + Faster R-CNN may both load on GPU).
+_person_detectors: dict[str, object] = {}
 _device = None
 _load_lock = threading.Lock()  # Lock for thread-safe model loading
 
 
-def _load_models():
-    """Load ML models once per worker process (lazy loading) - thread-safe"""
-    global _ball_detector, _court_detector, _person_detector, _bounce_detector, _device
+def _load_core_models():
+    """Load ball/court/bounce once per worker process (lazy, thread-safe)."""
+    global _ball_detector, _court_detector, _bounce_detector, _device
 
-    # Double-checked locking pattern for thread-safe lazy loading
     if _ball_detector is None:
         with _load_lock:
-            # Check again after acquiring lock (another thread might have loaded it)
             if _ball_detector is None:
                 _device = "cuda" if torch.cuda.is_available() else "cpu"
                 print(f"[CELERY WORKER]: Loading models on device: {_device}")
@@ -69,11 +69,27 @@ def _load_models():
                 _court_detector = CourtDetectorNet(
                     "./src/model_tennis_court_det.pt", _device
                 )
-                _person_detector = PersonDetector(_device)
                 _bounce_detector = BounceDetector("./src/ctb_regr_bounce.cbm")
-                print("[CELERY WORKER]: All models loaded successfully")
+                print("[CELERY WORKER]: Core models loaded successfully")
 
-    return _ball_detector, _court_detector, _person_detector, _bounce_detector
+    return _ball_detector, _court_detector, _bounce_detector
+
+
+def _get_person_detector_for_backend(backend: str):
+    """Lazy-load and cache person detector for the given backend id."""
+    global _person_detectors
+    with _load_lock:
+        if backend not in _person_detectors:
+            print(f"[CELERY WORKER]: Loading person detector backend={backend}")
+            _person_detectors[backend] = build_person_detector(backend, _device)
+        return _person_detectors[backend]
+
+
+def _load_models_for_task(person_backend: str):
+    """Return detectors for one task; person_backend is fixed for the whole task."""
+    ball_detector, court_detector, bounce_detector = _load_core_models()
+    person_detector = _get_person_detector_for_backend(person_backend)
+    return ball_detector, court_detector, person_detector, bounce_detector
 
 
 def get_celery():
@@ -87,8 +103,11 @@ def process_video_task(self, task_id: int, video_path: str, name: str):
         # Update task status to pending
         update_task_status(task_id, "pending", 0.0, "Waiting in queue to be processed")
 
-        # Load models (lazy loading - only loads once per worker)
-        ball_detector, court_detector, person_detector, bounce_detector = _load_models()
+        # Snapshot backend once per task so mid-run admin switches do not change this job.
+        person_backend = get_active_person_detector_backend()
+        ball_detector, court_detector, person_detector, bounce_detector = (
+            _load_models_for_task(person_backend)
+        )
 
         # Process the video
         process_video(

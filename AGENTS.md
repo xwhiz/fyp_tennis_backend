@@ -38,6 +38,7 @@
 ## ML / File Gotchas
 - Worker/model code expects weight files at repo-relative paths: `src/track_net_weights.pt`, `src/model_tennis_court_det.pt`, `src/ctb_regr_bounce.cbm`, and root `yolo26x.pt`. Run worker/API commands from repo root unless you also update those paths.
 - `src.main` creates and mounts `uploads/` and `output/` as static dirs.
+- Person detector: `PERSON_DETECTOR_BACKEND` / `person_detector_backend` (`fasterrcnn_resnet50` default, or `yolo26x`). Live switching uses Redis (`celery_result_backend` URL); each Celery task snapshots the backend at start.
 
 ## Schema / Migration Gotchas
 - Alembic autoloads every module under `src.models` via `pkgutil.iter_modules`, so new model files under that package are seen by migrations without a manual registry.

@@ -8,7 +8,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
 
+from src.celery.worker import ingest_document_task
 from src.config import settings
+from src.core.person_detector_backend import (
+    PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50,
+    PERSON_DETECTOR_BACKEND_YOLO26X,
+)
 from src.db.utils import SessionDep
 from src.dependencies.admin_auth import get_admin_auth_context
 from src.models.knowledge_document import KnowledgeDocument
@@ -16,7 +21,11 @@ from src.models.system_prompt import SystemPrompt
 from src.models.user import User, UserRole
 from src.services.jwt_service import create_access_token
 from src.services.rag_pipeline import describe_documents_grouped, ensure_storage_dirs
-from src.celery.worker import ingest_document_task
+from src.services.runtime_config import (
+    get_active_person_detector_backend,
+    redis_configured_for_runtime,
+    set_active_person_detector_backend,
+)
 
 router = APIRouter(tags=["admin"])
 templates = Jinja2Templates(directory="src/templates")
@@ -70,7 +79,7 @@ def admin_login(
         )
 
     token = create_access_token(user_id=user.id, role=user.role.value, email=user.email)
-    response = RedirectResponse(url="/admin", status_code=303)
+    response = RedirectResponse(url="/admin/chat", status_code=303)
     response.set_cookie(
         settings.admin_session_cookie_name,
         token,
@@ -90,16 +99,57 @@ def admin_logout():
 
 
 @router.get("/admin", response_class=HTMLResponse)
-def admin_dashboard(
+def admin_root_redirect(auth_ctx=Depends(get_admin_auth_context)):
+    return RedirectResponse(url="/admin/chat", status_code=303)
+
+
+@router.get("/admin/chat", response_class=HTMLResponse)
+def admin_chat_dashboard(
     request: Request,
     session: SessionDep,
     notice: str | None = None,
     auth_ctx=Depends(get_admin_auth_context),
 ):
-    return templates.TemplateResponse(
-        request,
-        "admin/dashboard.html",
-        _dashboard_context(request, session, auth_ctx, notice),
+    ctx = _dashboard_context(request, session, auth_ctx, notice)
+    ctx["active_nav"] = "chat"
+    return templates.TemplateResponse(request, "admin/chat.html", ctx)
+
+
+@router.get("/admin/person-detector", response_class=HTMLResponse)
+def admin_person_detector_page(
+    request: Request,
+    session: SessionDep,
+    notice: str | None = None,
+    auth_ctx=Depends(get_admin_auth_context),
+):
+    current = get_active_person_detector_backend()
+    ctx = {
+        "request": request,
+        "auth_ctx": auth_ctx,
+        "notice": notice,
+        "active_nav": "person_detector",
+        "current_backend": current,
+        "backend_yolo": PERSON_DETECTOR_BACKEND_YOLO26X,
+        "backend_frcnn": PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50,
+        "redis_configured": redis_configured_for_runtime(),
+        "prompts": [],
+        "documents": [],
+    }
+    return templates.TemplateResponse(request, "admin/person_detector.html", ctx)
+
+
+@router.post("/admin/person-detector")
+def admin_person_detector_save(
+    backend: str = Form(...),
+    auth_ctx=Depends(get_admin_auth_context),
+):
+    try:
+        set_active_person_detector_backend(backend)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return RedirectResponse(
+        url="/admin/person-detector?notice=Person+detector+saved",
+        status_code=303,
     )
 
 
@@ -128,7 +178,7 @@ def create_prompt(
         ),
     )
     session.commit()
-    return RedirectResponse(url="/admin?notice=Prompt+created", status_code=303)
+    return RedirectResponse(url="/admin/chat?notice=Prompt+created", status_code=303)
 
 
 @router.post("/admin/prompts/{prompt_id}/toggle")
@@ -143,7 +193,7 @@ def toggle_prompt(
     prompt.is_active = not prompt.is_active
     session.add(prompt)
     session.commit()
-    return RedirectResponse(url="/admin?notice=Prompt+updated", status_code=303)
+    return RedirectResponse(url="/admin/chat?notice=Prompt+updated", status_code=303)
 
 
 @router.post("/admin/documents")
@@ -186,7 +236,7 @@ async def upload_document(
     session.commit()
     session.refresh(document)
     ingest_document_task.delay(int(document.id))
-    return RedirectResponse(url="/admin?notice=Document+uploaded", status_code=303)
+    return RedirectResponse(url="/admin/chat?notice=Document+uploaded", status_code=303)
 
 
 @router.post("/admin/documents/{document_id}/toggle")
@@ -203,4 +253,4 @@ def toggle_document(
     document.is_active = not document.is_active
     session.add(document)
     session.commit()
-    return RedirectResponse(url="/admin?notice=Document+updated", status_code=303)
+    return RedirectResponse(url="/admin/chat?notice=Document+updated", status_code=303)
