@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from typing import Literal, Optional
 from scipy.spatial.distance import euclidean
+from sqlmodel import Session, select
 from tqdm import tqdm
 
 from src.core.get_direction_change_indices import get_direction_change_indices
@@ -29,11 +30,15 @@ from src.db.utils import (
     save_speed_in_db,
     save_thumbnail_in_db,
     save_video_paths_in_db,
+    save_rally_analysis_in_db,
     update_task_status,
 )
+from src.db.engine import Engine
 from src.schemas.speed_at import SpeedAt
 from src.core.court_reference import CourtReference
 from src.config import settings
+from src.models.background_task import BackgroundTask
+from src.services.rally_analysis import build_rally_analysis_payload
 
 
 court_ref = CourtReference()
@@ -57,6 +62,29 @@ def infer_hitter_for_speed(sources, destination) -> Literal["p1", "p2", "unknown
     if src_in_bottom_court and dst_in_top_court:
         return "p2"
     return "unknown"
+
+
+def resolve_speed_hitter_assignment(sources, destination) -> tuple[str, float, str, str]:
+    original_hitter = infer_hitter_for_speed(sources, destination)
+    if original_hitter in {"p1", "p2"}:
+        return original_hitter, 0.95, "detected", original_hitter
+    if destination is not None and destination[1] is not None:
+        fallback = "p2" if destination[1] < court_ref.net[0][1] else "p1"
+        return fallback, 0.6, "bounce-side-fallback", original_hitter
+    if sources:
+        mean_y = np.mean([source[1] for source in sources])
+        fallback = "p1" if mean_y < court_ref.net[0][1] else "p2"
+        return fallback, 0.55, "source-side-fallback", original_hitter
+    return "p1", 0.01, "default-fallback", original_hitter
+
+
+def _positions_payload(player_top: list, player_bottom: list) -> dict:
+    positions = {}
+    for i in range(len(player_top)):
+        top_bbox = [float(x) for x in player_top[i][0]] if player_top[i] is not None else None
+        bottom_bbox = [float(x) for x in player_bottom[i][0]] if player_bottom[i] is not None else None
+        positions[str(i)] = {"top": top_bbox, "bottom": bottom_bbox}
+    return positions
 
 
 def _normalize_fps(fps_raw) -> float:
@@ -612,7 +640,10 @@ def process_video(
         time_difference = (
             bounce_index - max(source_indices, key=lambda x: x[0])[0]
         ) / float(fps)
-        hitter = infer_hitter_for_speed(sources, destination)
+        hitter, hitter_confidence, attribution_method, original_hitter = resolve_speed_hitter_assignment(
+            sources,
+            destination,
+        )
         speed_before_bounce[bounce_index] = SpeedAt(
             speed=(meter_distance / time_difference) * 3.6,
             time_diff=time_difference,
@@ -620,6 +651,9 @@ def process_video(
             distance=meter_distance,
             shot_type=shot_type,
             hitter=hitter,
+            hitter_confidence=hitter_confidence,
+            original_hitter=original_hitter,
+            attribution_method=attribution_method,
         )
 
     speed_indices = sorted(speed_before_bounce.keys(), reverse=True)
@@ -883,7 +917,8 @@ def process_video(
 
     heatmap_top_path = f"output/output_{task_suffix}_{time.time()}_heatmap_top.png"
     heatmap_bottom_path = f"output/output_{task_suffix}_{time.time()}_heatmap_bottom.png"
-    save_heatmap_data_in_db(task_id, top_court_points, bottom_court_points)
+    if task_id is not None:
+        save_heatmap_data_in_db(task_id, top_court_points, bottom_court_points)
     
     heatmap_top = generate_player_heatmap(top_court_points)
     heatmap_bottom = generate_player_heatmap(bottom_court_points)
@@ -891,10 +926,45 @@ def process_video(
     cv2.imwrite(heatmap_bottom_path, heatmap_bottom)
     print(f"[INFO]: Heatmaps saved ({len(top_court_points)} top pts, {len(bottom_court_points)} bottom pts)")
 
-    save_homography_matrices_in_db(task_id, homography_matrices)
+    if task_id is not None:
+        save_homography_matrices_in_db(task_id, homography_matrices)
 
     cleanup_memory(device)
 
     if task_id is not None:
         save_video_paths_in_db(task_id, name, output_path, minimap_path)
+        with Session(Engine.instance()) as session:
+            task = session.exec(
+                select(BackgroundTask).where(BackgroundTask.id == task_id),
+            ).first()
+            if task is not None:
+                public_payload, internal_payload = build_rally_analysis_payload(
+                    session=session,
+                    task=task,
+                    rally_list=rally_list,
+                    ball_track_map={str(i): point for i, point in enumerate(transformed_track)},
+                    bounces_map={
+                        str(index): {
+                            "position": transformed_track[index],
+                            "serve": index in serve_frames,
+                        }
+                        for index in bounces
+                    },
+                    direction_change_map={
+                        str(index): transformed_track[index] for index in direction_change_indices
+                    },
+                    positions_map=_positions_payload(player_top, player_bottom),
+                    speed_map={str(k): v.to_dict() for k, v in speed_before_bounce.items()},
+                    matrices=homography_matrices,
+                    fps=fps,
+                    total_frames=total_frames,
+                    output_path=output_path,
+                    minimap_path=minimap_path,
+                    thumbnail_path=thumbnail_path,
+                )
+                save_rally_analysis_in_db(
+                    task_id=task_id,
+                    public_payload=public_payload,
+                    internal_payload=internal_payload,
+                )
         update_task_status(task_id, "completed", round(1.0, 3), "Video processed successfully")

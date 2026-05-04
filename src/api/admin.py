@@ -15,11 +15,14 @@ from src.core.person_detector_backend import (
     PERSON_DETECTOR_BACKEND_YOLO26X,
 )
 from src.db.utils import SessionDep
+from src.dependencies.auth import AuthContext, get_auth_context
 from src.dependencies.admin_auth import get_admin_auth_context
+from src.dependencies.ownership import is_admin
 from src.models.knowledge_document import KnowledgeDocument
 from src.models.system_prompt import SystemPrompt
 from src.models.user import User, UserRole
 from src.services.jwt_service import create_access_token
+from src.services.rally_analysis import rebuild_and_save_rally_analysis_from_legacy
 from src.services.rag_pipeline import describe_documents_grouped, ensure_storage_dirs
 from src.services.runtime_config import (
     get_active_person_detector_backend,
@@ -29,6 +32,12 @@ from src.services.runtime_config import (
 
 router = APIRouter(tags=["admin"])
 templates = Jinja2Templates(directory="src/templates")
+
+
+def require_admin_api(auth_ctx: AuthContext) -> AuthContext:
+    if not is_admin(auth_ctx):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return auth_ctx
 
 
 def _dashboard_context(request: Request, session, auth_ctx, notice: str | None = None) -> dict:
@@ -254,3 +263,21 @@ def toggle_document(
     session.add(document)
     session.commit()
     return RedirectResponse(url="/admin/chat?notice=Document+updated", status_code=303)
+
+
+@router.post("/admin/tasks/{task_id}/backfill-rally-analysis")
+def backfill_rally_analysis(
+    task_id: int,
+    session: SessionDep,
+    auth_ctx: AuthContext = Depends(get_auth_context),
+):
+    require_admin_api(auth_ctx)
+    payload = rebuild_and_save_rally_analysis_from_legacy(session, task_id)
+    return {
+        "success": True,
+        "data": {
+            "task_id": task_id,
+            "schema_version": payload.get("schema_version"),
+            "summary": payload.get("summary"),
+        },
+    }

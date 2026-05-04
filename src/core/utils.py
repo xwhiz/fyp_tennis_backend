@@ -66,52 +66,89 @@ def compress_frame(frame: np.ndarray, quality: int = 80):
     return None if not ret else buffer
 
 
-def classify_serve_type(bounce_x: float, bounce_y: float) -> str:
+def classify_serve_type(bounce_x: float | None, bounce_y: float | None) -> str:
     """
-    Classify a serve based on where the ball lands in court coordinates.
+    Classify a serve landing point into one of:
+    `t`, `body`, `corner`, `wide`, `bucket`, or `fault`.
 
-    Service box geometry (from CourtReference):
-      Top box:    x in [423, 1242], y in [1110, 1748]
-      Bottom box: x in [423, 1242], y in [1748, 2386]
-      Center line: x = 832
-
-    Zones (by normalized distance from center line within the half-box):
-      T Serve:    < 0.33  (near center T)
-      Body Serve: 0.33 - 0.67  (middle zone)
-      Wide Serve: > 0.67  (near outer sideline)
+    Geometry is defined in court-reference space. The targets are approximated
+    as rectangles using the service line, center line, and singles sideline.
     """
-    # Service box boundaries
-    service_x_min = 423
-    service_x_max = 1242
-    center_x = 832
-    top_service_y_min = 1110
-    top_service_y_max = 1748  # net
-    bottom_service_y_min = 1748  # net
-    bottom_service_y_max = 2386
+    if bounce_x is None or bounce_y is None:
+        return "fault"
 
-    # Check if the bounce is in a service box
-    in_top_box = (service_x_min <= bounce_x <= service_x_max and
-                  top_service_y_min <= bounce_y <= top_service_y_max)
-    in_bottom_box = (service_x_min <= bounce_x <= service_x_max and
-                     bottom_service_y_min <= bounce_y <= bottom_service_y_max)
+    service_x_min = 423.0
+    service_x_max = 1242.0
+    center_x = 832.0
+    top_service_y_min = 1110.0
+    top_service_y_max = 1748.0
+    bottom_service_y_min = 1748.0
+    bottom_service_y_max = 2386.0
 
-    if not in_top_box and not in_bottom_box:
-        return "unknown"
-
-    # Determine which half-box the ball is in and compute normalized distance from center
-    if bounce_x < center_x:
-        half_box_width = center_x - service_x_min  # 409
+    if service_x_min <= bounce_x <= service_x_max and top_service_y_min <= bounce_y <= top_service_y_max:
+        box_vertical = "top"
+    elif service_x_min <= bounce_x <= service_x_max and bottom_service_y_min <= bounce_y <= bottom_service_y_max:
+        box_vertical = "bottom"
     else:
-        half_box_width = service_x_max - center_x  # 410
+        return "fault"
 
-    normalized_dist = abs(bounce_x - center_x) / half_box_width
-
-    if normalized_dist < 0.33:
-        return "t_serve"
-    elif normalized_dist > 0.67:
-        return "wide_serve"
+    if bounce_x <= center_x:
+        box_side = "left"
+        box_x_min = service_x_min
+        box_x_max = center_x
     else:
-        return "body_serve"
+        box_side = "right"
+        box_x_min = center_x
+        box_x_max = service_x_max
+
+    pixels_per_foot = (service_x_max - service_x_min) / 27.0
+    racquet_width = 2.25 * pixels_per_foot
+    target_depth = 5.0 * pixels_per_foot
+
+    if box_vertical == "top":
+        service_line_y = top_service_y_min
+        body_y_min = service_line_y
+        body_y_max = service_line_y + racquet_width
+        target_y_min = service_line_y
+        target_y_max = service_line_y + target_depth
+        wide_y_min = target_y_max
+        wide_y_max = target_y_max + target_depth
+    else:
+        service_line_y = bottom_service_y_max
+        body_y_min = service_line_y - racquet_width
+        body_y_max = service_line_y
+        target_y_min = service_line_y - target_depth
+        target_y_max = service_line_y
+        wide_y_min = service_line_y - (2 * target_depth)
+        wide_y_max = service_line_y - target_depth
+
+    if box_side == "left":
+        t_x_min = center_x - racquet_width
+        t_x_max = center_x
+        corner_x_min = box_x_min
+        corner_x_max = box_x_min + racquet_width
+    else:
+        t_x_min = center_x
+        t_x_max = center_x + racquet_width
+        corner_x_min = box_x_max - racquet_width
+        corner_x_max = box_x_max
+
+    if t_x_min <= bounce_x <= t_x_max and target_y_min <= bounce_y <= target_y_max:
+        return "t"
+    if corner_x_min <= bounce_x <= corner_x_max and target_y_min <= bounce_y <= target_y_max:
+        return "corner"
+    if corner_x_min <= bounce_x <= corner_x_max and wide_y_min <= bounce_y <= wide_y_max:
+        return "wide"
+    if body_y_min <= bounce_y <= body_y_max:
+        if box_side == "left":
+            body_x_min = corner_x_max
+            body_x_max = t_x_min
+        else:
+            body_x_min = t_x_max
+            body_x_max = corner_x_min
+        if body_x_min <= bounce_x <= body_x_max:
+            return "body"
+    return "bucket"
 
 
 def serve_player_from_bounce_court(bounce_x: float | None, bounce_y: float | None) -> str:

@@ -39,6 +39,7 @@ from src.models import (
 )
 import src.models.homography_matrices  # noqa: F401
 import src.models.model_metrics  # noqa: F401
+import src.models.rally_analysis  # noqa: F401
 import src.models.player_heatmap_data  # noqa: F401
 import src.models.rally_stats  # noqa: F401
 import src.models.shot_annotation  # noqa: F401
@@ -212,3 +213,161 @@ def sample_task_id(_db_tables):
         session.commit()
         session.refresh(task)
         return task.id
+
+
+@pytest.fixture
+def sample_legacy_stats_task_id(_db_tables, sample_task_id):
+    from datetime import datetime
+
+    from sqlmodel import Session, select
+
+    from src.db.engine import Engine
+    from src.models.ball_track import BallTrack
+    from src.models.bounces import Bounces
+    from src.models.direction_change_indices import DirectionChangeIndices
+    from src.models.homography_matrices import HomographyMatrices
+    from src.models.player_positions import PlayerPositions
+    from src.models.rally_stats import RallyStats
+    from src.models.speed import Speed
+    from src.models.thumbnail import Thumbnail
+    from src.models.user import User
+    from src.models.video_paths import VideoPaths
+
+    with Session(Engine.instance()) as session:
+        task_owner = session.exec(select(User).where(User.email == "admin@example.com")).first()
+        owner_id = task_owner.id
+
+        if session.exec(select(RallyStats).where(RallyStats.task_id == sample_task_id)).first() is None:
+            session.add(
+                RallyStats(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    rallies=[
+                        {
+                            "scene_index": 0,
+                            "start_frame": 10,
+                            "end_frame": 25,
+                            "bounce_frames": [12, 22],
+                            "serve_bounce_frame": 12,
+                            "last_bounce_frame": 22,
+                            "shot_count": 2,
+                        },
+                    ],
+                ),
+            )
+
+        if session.exec(select(BallTrack).where(BallTrack.task_id == sample_task_id)).first() is None:
+            session.add(
+                BallTrack(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    ball_track={
+                        "10": [780.0, 1320.0],
+                        "11": [800.0, 1450.0],
+                        "12": [840.0, 1600.0],
+                        "20": [840.0, 2240.0],
+                        "21": [820.0, 2050.0],
+                        "22": [800.0, 1890.0],
+                    },
+                ),
+            )
+
+        if session.exec(select(Bounces).where(Bounces.task_id == sample_task_id)).first() is None:
+            session.add(
+                Bounces(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    bounces={
+                        "12": {"position": [840.0, 1600.0], "serve": True},
+                        "22": {"position": [800.0, 1890.0], "serve": False},
+                    },
+                ),
+            )
+
+        if session.exec(
+            select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == sample_task_id),
+        ).first() is None:
+            session.add(
+                DirectionChangeIndices(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    direction_change_indices={
+                        "10": [780.0, 1320.0],
+                        "20": [840.0, 2240.0],
+                    },
+                ),
+            )
+
+        if session.exec(select(PlayerPositions).where(PlayerPositions.task_id == sample_task_id)).first() is None:
+            positions = {}
+            for frame in range(10, 23):
+                positions[str(frame)] = {
+                    "top": [300.0, 120.0, 360.0, 260.0],
+                    "bottom": [900.0, 440.0, 980.0, 650.0],
+                }
+            session.add(
+                PlayerPositions(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    positions=positions,
+                ),
+            )
+
+        if session.exec(select(Speed).where(Speed.task_id == sample_task_id)).first() is None:
+            session.add(
+                Speed(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    speeds={
+                        "22": {
+                            "speed": 96.4,
+                            "time_diff": 0.4,
+                            "timestamp": 0.733,
+                            "distance": 10.71,
+                            "shot_type": "forehand",
+                            "hitter": "unknown",
+                            "hitter_confidence": 0.0,
+                            "original_hitter": "unknown",
+                            "attribution_method": "legacy",
+                        },
+                    },
+                ),
+            )
+
+        if session.exec(select(HomographyMatrices).where(HomographyMatrices.task_id == sample_task_id)).first() is None:
+            matrices = [None] * 30
+            identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            for frame in range(10, 23):
+                matrices[frame] = identity
+            session.add(
+                HomographyMatrices(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    matrices=matrices,
+                ),
+            )
+
+        if session.exec(select(VideoPaths).where(VideoPaths.task_id == sample_task_id)).first() is None:
+            session.add(
+                VideoPaths(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    name="test-task",
+                    output_path="output/test-task.mp4",
+                    minimap_path="output/test-task-minimap.mp4",
+                ),
+            )
+
+        if session.exec(select(Thumbnail).where(Thumbnail.task_id == sample_task_id)).first() is None:
+            session.add(
+                Thumbnail(
+                    task_id=sample_task_id,
+                    owner_id=owner_id,
+                    thumbnail_path="output/test-task-thumbnail.jpg",
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                ),
+            )
+
+        session.commit()
+    return sample_task_id

@@ -13,6 +13,7 @@ from src.models.user import User  # noqa: F401 - registers `users` for owner_id 
 from src.models.direction_change_indices import DirectionChangeIndices
 from src.models.homography_matrices import HomographyMatrices
 from src.models.player_heatmap_data import PlayerHeatmapData
+from src.models.rally_analysis import RallyAnalysis
 from src.models.speed import Speed
 from src.models.player_positions import PlayerPositions
 from src.models.rally_stats import RallyStats
@@ -229,4 +230,34 @@ def save_thumbnail_in_db(task_id: int, thumbnail_path: str):
     oid = _owner_id_for_task(task_id)
     with Session(Engine.instance()) as session:
         session.add(Thumbnail(task_id=task_id, thumbnail_path=thumbnail_path, owner_id=oid))
+        session.commit()
+
+
+def save_rally_analysis_in_db(
+    task_id: int,
+    public_payload: dict,
+    internal_payload: dict | None = None,
+    schema_version: int = 1,
+):
+    oid = _owner_id_for_task(task_id)
+    with Session(Engine.instance()) as session:
+        existing = session.exec(
+            select(RallyAnalysis).where(RallyAnalysis.task_id == task_id)
+        ).first()
+        payload_internal = internal_payload or {}
+        if existing:
+            existing.schema_version = schema_version
+            existing.public_payload = public_payload
+            existing.internal_payload = payload_internal
+            session.add(existing)
+        else:
+            session.add(
+                RallyAnalysis(
+                    task_id=task_id,
+                    schema_version=schema_version,
+                    public_payload=public_payload,
+                    internal_payload=payload_internal,
+                    owner_id=oid,
+                ),
+            )
         session.commit()

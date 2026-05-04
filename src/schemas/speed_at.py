@@ -10,6 +10,9 @@ class SpeedAt:
     distance: float
     shot_type: str
     hitter: str = "unknown"
+    hitter_confidence: float = 0.0
+    original_hitter: str = "unknown"
+    attribution_method: str = "legacy"
 
     def to_dict(self):
         return {
@@ -19,6 +22,9 @@ class SpeedAt:
             "distance": self.distance,
             "shot_type": self.shot_type,
             "hitter": self.hitter,
+            "hitter_confidence": self.hitter_confidence,
+            "original_hitter": self.original_hitter,
+            "attribution_method": self.attribution_method,
         }
 
     def to_json(self):

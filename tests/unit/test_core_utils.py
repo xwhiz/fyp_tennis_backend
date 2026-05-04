@@ -13,31 +13,29 @@ from src.core.utils import (
 class TestClassifyServeType:
     """Test classify_serve_type(bounce_x, bounce_y)."""
 
-    # Service box: x in [423, 1242], center_x=832, top y [1110,1748], bottom y [1748,2386]
-
     def test_t_serve_near_center_top_box(self):
-        # Center of top service box -> T serve (normalized_dist < 0.33)
-        assert classify_serve_type(832, 1400) == "t_serve"
+        assert classify_serve_type(800, 1180) == "t"
 
     def test_t_serve_near_center_bottom_box(self):
-        assert classify_serve_type(832, 2000) == "t_serve"
+        assert classify_serve_type(860, 2320) == "t"
 
-    def test_body_serve_middle_zone(self):
-        # normalized_dist in [0.33, 0.67]
-        assert classify_serve_type(1000, 1400) == "body_serve"
+    def test_body_serve_along_service_line(self):
+        assert classify_serve_type(700, 1150) == "body"
 
-    def test_wide_serve_outer_zone(self):
-        # normalized_dist > 0.67
-        assert classify_serve_type(1200, 1400) == "wide_serve"
+    def test_corner_serve_near_sideline_and_service_line(self):
+        assert classify_serve_type(450, 1180) == "corner"
 
-    def test_wide_serve_left_side(self):
-        assert classify_serve_type(450, 1400) == "wide_serve"
+    def test_wide_serve_along_sideline(self):
+        assert classify_serve_type(450, 1320) == "wide"
 
-    def test_unknown_outside_service_box(self):
-        assert classify_serve_type(100, 100) == "unknown"
+    def test_bucket_serve_inside_box_but_outside_named_targets(self):
+        assert classify_serve_type(640, 1450) == "bucket"
 
-    def test_unknown_below_court(self):
-        assert classify_serve_type(832, 3000) == "unknown"
+    def test_fault_outside_service_box(self):
+        assert classify_serve_type(100, 100) == "fault"
+
+    def test_fault_for_missing_point(self):
+        assert classify_serve_type(None, None) == "fault"
 
 
 @pytest.mark.unit

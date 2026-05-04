@@ -1,64 +1,21 @@
-import glob
-import json
-import os
+from fastapi import APIRouter, Depends, Query
 
-import cv2
-import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import select
-
-from src.core.utils import (
-    classify_serve_type,
-    generate_player_heatmap,
-    serve_player_from_bounce_court,
-)
-from src.db.utils import SessionDep, save_heatmap_data_in_db
+from src.db.utils import SessionDep
 from src.dependencies.auth import AuthContext, get_auth_context
 from src.dependencies.ownership import require_task_access
-from src.models.ball_track import BallTrack
-from src.models.bounces import Bounces
-from src.models.direction_change_indices import DirectionChangeIndices
-from src.models.homography_matrices import HomographyMatrices
-from src.models.player_heatmap_data import PlayerHeatmapData
-from src.models.player_positions import PlayerPositions
-from src.models.rally_stats import RallyStats
-from src.models.speed import Speed
-from src.models.thumbnail import Thumbnail
-from src.models.video_paths import VideoPaths
-from src.schemas.ball_track import BallTrackSchema
-from src.schemas.bounces import BouncesSchema
-from src.schemas.direction_change_indices import DirectionChangeIndicesSchema
-from src.schemas.player_positions import PlayerPositionsSchema
-from src.schemas.thumbnail import ThumbnailSchema
-from src.schemas.video_paths import VideoPathsSchema
-from src.services.stats_players import (
-    build_player_displays,
-    heatmap_paths_for_task,
-    serve_summary_counts,
-    split_positions_for_players,
-    split_speed_by_hitter,
-)
+from src.services.rally_analysis import get_rally_analysis_row
 
 router = APIRouter(tags=["stats"])
 
 
-def _rally_stats_payload_from_row(rallies_value) -> dict:
-    if isinstance(rallies_value, str):
-        rallies = json.loads(rallies_value)
-    else:
-        rallies = rallies_value or []
-    return {"rallies": rallies, "total_rallies": len(rallies)}
+def _analysis_payload(session, task_id: int, auth_ctx: AuthContext) -> dict | None:
+    require_task_access(session, task_id, auth_ctx)
+    row = get_rally_analysis_row(session, task_id)
+    return row.public_payload if row is not None else None
 
 
-def _json_value(value):
-    return json.loads(value) if isinstance(value, str) else value
-
-
-def _rally_stats_addendum(session, task_id: int) -> dict:
-    row = session.exec(select(RallyStats).where(RallyStats.task_id == task_id)).first()
-    if row is None:
-        return {"rallies": [], "total_rallies": 0}
-    return _rally_stats_payload_from_row(row.rallies)
+def _missing_payload(message: str) -> dict:
+    return {"success": True, "message": message}
 
 
 @router.get("/get_video_paths/{task_id}")
@@ -68,14 +25,24 @@ async def get_video_paths(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(VideoPaths).where(VideoPaths.task_id == task_id)
-    video_paths = session.exec(statement).first()
-    if video_paths is None:
-        return None if not is_api else {"success": True, "message": "Video paths not found"}
-
-    video_paths_dict = VideoPathsSchema.model_validate(video_paths).model_dump()
-    return video_paths_dict if not is_api else {"success": True, "data": video_paths_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {
+        "video": payload.get("video"),
+        "rally_ranges": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "start_frame": rally.get("start_frame"),
+                "end_frame": rally.get("end_frame"),
+                "start_time_sec": rally.get("start_time_sec"),
+                "end_time_sec": rally.get("end_time_sec"),
+            }
+            for rally in payload.get("rallies", [])
+        ],
+    }
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/get_speed_stats/{task_id}")
@@ -86,17 +53,21 @@ async def get_speed_stats(
     grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(Speed).where(Speed.task_id == task_id)
-    speed_stats = session.exec(statement).first()
-
-    if speed_stats is None:
-        return None if not is_api else {"success": True, "message": "Speed stats not found"}
-
-    data = _json_value(speed_stats.speeds)
-    if grouped and is_api:
-        p1, p2, unassigned = split_speed_by_hitter(data)
-        return {"success": True, "data": {"p1": p1, "p2": p2, "unassigned": unassigned}}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    rallies = []
+    for rally in payload.get("rallies", []):
+        entry = {
+            "rally_id": rally.get("rally_id"),
+            "scene_index": rally.get("scene_index"),
+            "players": {
+                "p1": rally.get("players", {}).get("p1", {}).get("speed_stats", []),
+                "p2": rally.get("players", {}).get("p2", {}).get("speed_stats", []),
+            },
+        }
+        rallies.append(entry)
+    data = {"summary": payload.get("summary"), "rallies": rallies}
     return data if not is_api else {"success": True, "data": data}
 
 
@@ -107,15 +78,20 @@ async def get_ball_track(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(BallTrack).where(BallTrack.task_id == task_id)
-    ball_track = session.exec(statement).first()
-    if ball_track is None:
-        return None if not is_api else {"success": True, "message": "Ball track not found"}
-
-    ball_track.ball_track = _json_value(ball_track.ball_track)
-    ball_track_dict = BallTrackSchema.model_validate(ball_track).model_dump()
-    return ball_track_dict if not is_api else {"success": True, "data": ball_track_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {
+        "rallies": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "ball_track": rally.get("shared", {}).get("ball_track", []),
+            }
+            for rally in payload.get("rallies", [])
+        ],
+    }
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/get_bounces/{task_id}")
@@ -125,15 +101,20 @@ async def get_bounces(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(Bounces).where(Bounces.task_id == task_id)
-    bounces = session.exec(statement).first()
-    if bounces is None:
-        return None if not is_api else {"success": True, "message": "Bounces not found"}
-
-    bounces.bounces = _json_value(bounces.bounces)
-    bounces_dict = BouncesSchema.model_validate(bounces).model_dump()
-    return bounces_dict if not is_api else {"success": True, "data": bounces_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {
+        "rallies": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "ball_bounces": rally.get("shared", {}).get("ball_bounces", []),
+            }
+            for rally in payload.get("rallies", [])
+        ],
+    }
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/get_direction_change_indices/{task_id}")
@@ -143,15 +124,20 @@ async def get_direction_change_indices_api(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)
-    direction_change_indices = session.exec(statement).first()
-    if direction_change_indices is None:
-        return None if not is_api else {"success": True, "message": "Direction change indices not found"}
-
-    direction_change_indices.direction_change_indices = _json_value(direction_change_indices.direction_change_indices)
-    direction_change_indices_dict = DirectionChangeIndicesSchema.model_validate(direction_change_indices).model_dump()
-    return direction_change_indices_dict if not is_api else {"success": True, "data": direction_change_indices_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {
+        "rallies": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "direction_changes": rally.get("shared", {}).get("direction_changes", []),
+            }
+            for rally in payload.get("rallies", [])
+        ],
+    }
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/get_player_positions/{task_id}")
@@ -162,18 +148,22 @@ async def get_player_positions(
     grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(PlayerPositions).where(PlayerPositions.task_id == task_id)
-    player_positions = session.exec(statement).first()
-    if player_positions is None:
-        return None if not is_api else {"success": True, "message": "Player positions not found"}
-
-    player_positions.positions = _json_value(player_positions.positions)
-    player_positions_dict = PlayerPositionsSchema.model_validate(player_positions).model_dump()
-    if grouped and is_api:
-        p1, p2 = split_positions_for_players(player_positions_dict)
-        return {"success": True, "data": {"p1": p1, "p2": p2}}
-    return player_positions_dict if not is_api else {"success": True, "data": player_positions_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    rallies = []
+    for rally in payload.get("rallies", []):
+        entry = {
+            "rally_id": rally.get("rally_id"),
+            "scene_index": rally.get("scene_index"),
+            "players": {
+                "p1": {"positions": rally.get("players", {}).get("p1", {}).get("positions", [])},
+                "p2": {"positions": rally.get("players", {}).get("p2", {}).get("positions", [])},
+            },
+        }
+        rallies.append(entry)
+    data = {"rallies": rallies}
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/thumbnail/{task_id}")
@@ -183,20 +173,11 @@ async def get_thumbnail(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    statement = select(Thumbnail).where(Thumbnail.task_id == task_id)
-    thumbnail = session.exec(statement).first()
-    if thumbnail is None:
-        return None if not is_api else {"success": True, "message": "Thumbnail not found"}
-
-    thumbnail_dict = ThumbnailSchema.model_validate(thumbnail).model_dump()
-    thumbnail_dict = {
-        "id": str(thumbnail.id),
-        "thumbnail_path": thumbnail.thumbnail_path,
-        "created_at": thumbnail.created_at,
-        "updated_at": thumbnail.updated_at,
-    }
-    return thumbnail_dict if not is_api else {"success": True, "data": thumbnail_dict}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {"thumbnail_path": payload.get("video", {}).get("thumbnail_path")}
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/rally_stats/{task_id}")
@@ -206,12 +187,26 @@ async def get_rally_stats(
     is_api: bool = True,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    row = session.exec(select(RallyStats).where(RallyStats.task_id == task_id)).first()
-    if row is None:
-        return None if not is_api else {"success": True, "message": "Rally stats not found"}
-    payload = _rally_stats_payload_from_row(row.rallies)
-    return payload if not is_api else {"success": True, "data": payload}
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return None if not is_api else _missing_payload("Rally-first analysis not found")
+    data = {
+        "total_rallies": payload.get("summary", {}).get("total_rallies", 0),
+        "rallies": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "start_frame": rally.get("start_frame"),
+                "end_frame": rally.get("end_frame"),
+                "start_time_sec": rally.get("start_time_sec"),
+                "end_time_sec": rally.get("end_time_sec"),
+                "duration_sec": rally.get("duration_sec"),
+                "summary": rally.get("summary"),
+            }
+            for rally in payload.get("rallies", [])
+        ],
+    }
+    return data if not is_api else {"success": True, "data": data}
 
 
 @router.get("/all-stats/{task_id}")
@@ -220,71 +215,10 @@ async def get_all_stats(
     session: SessionDep,
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    task = require_task_access(session, task_id, auth_ctx)
-    p1_display, p2_display = build_player_displays(session, task)
-
-    video_paths = await get_video_paths(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    speed_stats = await get_speed_stats(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    ball_track = await get_ball_track(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    bounces = await get_bounces(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    direction_change_indices = await get_direction_change_indices_api(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    player_positions = await get_player_positions(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    thumbnail = await get_thumbnail(task_id, session, is_api=False, auth_ctx=auth_ctx)
-    rally_stats = await get_rally_stats(task_id, session, is_api=False, auth_ctx=auth_ctx)
-
-    from src.api.tasks import get_task_progress
-
-    progress = get_task_progress(task_id, session, is_api=False, auth_ctx=auth_ctx)
-
-    serve_resp = await get_serve_stats(task_id, session, auth_ctx=auth_ctx)
-    serve_data = serve_resp.get("data") or {}
-    serves = serve_data.get("serves") or []
-    p1_serves = [s for s in serves if s.get("server") == "p1"]
-    p2_serves = [s for s in serves if s.get("server") == "p2"]
-
-    sp1, sp2, sun = split_speed_by_hitter(speed_stats if isinstance(speed_stats, dict) else None)
-    p1_pos, p2_pos = split_positions_for_players(player_positions if isinstance(player_positions, dict) else None)
-    ht_top, ht_bottom = heatmap_paths_for_task(task_id)
-
-    return {
-        "success": True,
-        "data": {
-            "shared": {
-                "video_paths": video_paths,
-                "ball_track": ball_track,
-                "bounces": bounces,
-                "direction_change_indices": direction_change_indices,
-                "thumbnail": thumbnail,
-                "rally_stats": rally_stats,
-                "speed_stats_unassigned": sun,
-            },
-            "players": {
-                "p1": {
-                    "role": "opponent",
-                    "display": p1_display,
-                    "player_positions": p1_pos,
-                    "player_heatmaps": {"player_heatmap": ht_top},
-                    "speed_stats": sp1,
-                    "serve_stats": {
-                        "serves": p1_serves,
-                        "summary": serve_summary_counts(p1_serves),
-                    },
-                },
-                "p2": {
-                    "role": "owner",
-                    "display": p2_display,
-                    "player_positions": p2_pos,
-                    "player_heatmaps": {"player_heatmap": ht_bottom},
-                    "speed_stats": sp2,
-                    "serve_stats": {
-                        "serves": p2_serves,
-                        "summary": serve_summary_counts(p2_serves),
-                    },
-                },
-            },
-        },
-        "progress": progress,
-    }
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return _missing_payload("Rally-first analysis not found")
+    return {"success": True, "data": payload}
 
 
 @router.get("/serve_stats/{task_id}")
@@ -294,95 +228,22 @@ async def get_serve_stats(
     grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    bounces_row = session.exec(select(Bounces).where(Bounces.task_id == task_id)).first()
-    if bounces_row is None:
-        return {
-            "success": True,
-            "message": "Bounces not found",
-            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
-        }
-    bounces_data = _json_value(bounces_row.bounces)
-
-    dci_row = session.exec(select(DirectionChangeIndices).where(DirectionChangeIndices.task_id == task_id)).first()
-    if dci_row is None:
-        return {
-            "success": True,
-            "message": "Direction change indices not found",
-            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
-        }
-    dci_data = _json_value(dci_row.direction_change_indices)
-    dc_frames_sorted = sorted(int(k) for k in dci_data.keys())
-
-    ball_track_row = session.exec(select(BallTrack).where(BallTrack.task_id == task_id)).first()
-    if ball_track_row is None:
-        return {
-            "success": True,
-            "message": "Ball track not found",
-            "data": {"serves": [], **_rally_stats_addendum(session, task_id)},
-        }
-    ball_track_data = _json_value(ball_track_row.ball_track)
-
-    serves = []
-    for frame_str, bounce_info in bounces_data.items():
-        if not bounce_info.get("serve", False):
-            continue
-        bounce_frame = int(frame_str)
-        bounce_position = bounce_info["position"]
-        origin_frame = None
-        for dc_frame in reversed(dc_frames_sorted):
-            if dc_frame < bounce_frame:
-                origin_frame = dc_frame
-                break
-        if origin_frame is None:
-            continue
-
-        origin_position = ball_track_data.get(str(origin_frame))
-        if origin_position is None:
-            continue
-
-        track_segment = []
-        for f in range(origin_frame, bounce_frame + 1):
-            point = ball_track_data.get(str(f))
-            if point is not None:
-                track_segment.append(point)
-
-        serve_type = "unknown"
-        bx = by = None
-        if bounce_position and bounce_position[0] is not None and bounce_position[1] is not None:
-            bx, by = bounce_position[0], bounce_position[1]
-            serve_type = classify_serve_type(bx, by)
-
-        server = serve_player_from_bounce_court(bx, by)
-        serves.append(
-            {
-                "bounce_frame": bounce_frame,
-                "bounce_position": bounce_position,
-                "origin_frame": origin_frame,
-                "origin_position": origin_position,
-                "ball_track": track_segment,
-                "serve_type": serve_type,
-                "server": server,
-            },
-        )
-
-    serves.sort(key=lambda s: s["bounce_frame"])
-    rally = _rally_stats_addendum(session, task_id)
-    if grouped:
-        p1_serves = [s for s in serves if s.get("server") == "p1"]
-        p2_serves = [s for s in serves if s.get("server") == "p2"]
-        return {
-            "success": True,
-            "data": {
-                "shared": rally,
-                "p1": {"serves": p1_serves, "summary": serve_summary_counts(p1_serves)},
-                "p2": {"serves": p2_serves, "summary": serve_summary_counts(p2_serves)},
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return _missing_payload("Rally-first analysis not found")
+    rallies = []
+    for rally in payload.get("rallies", []):
+        entry = {
+            "rally_id": rally.get("rally_id"),
+            "scene_index": rally.get("scene_index"),
+            "players": {
+                "p1": rally.get("players", {}).get("p1", {}).get("serve_stats"),
+                "p2": rally.get("players", {}).get("p2", {}).get("serve_stats"),
             },
         }
-    return {
-        "success": True,
-        "data": {"serves": serves, **rally},
-    }
+        rallies.append(entry)
+    data = {"rallies": rallies}
+    return {"success": True, "data": data}
 
 
 @router.get("/player_heatmaps/{task_id}")
@@ -392,113 +253,20 @@ async def get_player_heatmaps(
     grouped: bool = Query(False),
     auth_ctx: AuthContext = Depends(get_auth_context),
 ) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    heatmap_top_path = f"output/output_{task_id}_*_heatmap_top.png"
-    heatmap_bottom_path = f"output/output_{task_id}_*_heatmap_bottom.png"
-
-    heatmap_top_files = glob.glob(heatmap_top_path)
-    heatmap_bottom_files = glob.glob(heatmap_bottom_path)
-    if len(heatmap_top_files) == 0 or len(heatmap_bottom_files) == 0:
-        empty = {
-            "player_top_heatmap": None,
-            "player_bottom_heatmap": None,
-        }
-        if grouped:
-            return {
-                "success": True,
-                "data": {
-                    "p1": {"player_heatmap": None},
-                    "p2": {"player_heatmap": None},
+    payload = _analysis_payload(session, task_id, auth_ctx)
+    if payload is None:
+        return _missing_payload("Rally-first analysis not found")
+    data = {
+        "rallies": [
+            {
+                "rally_id": rally.get("rally_id"),
+                "scene_index": rally.get("scene_index"),
+                "players": {
+                    "p1": {"heatmap": rally.get("players", {}).get("p1", {}).get("heatmap")},
+                    "p2": {"heatmap": rally.get("players", {}).get("p2", {}).get("heatmap")},
                 },
             }
-        return {"success": True, "data": empty}
-
-    heatmap_top_file = max(heatmap_top_files, key=os.path.getctime)
-    heatmap_bottom_file = max(heatmap_bottom_files, key=os.path.getctime)
-    top_url = f"/{heatmap_top_file}"
-    bottom_url = f"/{heatmap_bottom_file}"
-    if grouped:
-        return {
-            "success": True,
-            "data": {
-                "p1": {"player_heatmap": top_url},
-                "p2": {"player_heatmap": bottom_url},
-            },
-        }
-    return {
-        "success": True,
-        "data": {
-            "player_top_heatmap": top_url,
-            "player_bottom_heatmap": bottom_url,
-        },
+            for rally in payload.get("rallies", [])
+        ],
     }
-
-
-def _foot_from_bbox(bbox):
-    if not bbox or len(bbox) < 4:
-        return None
-    return ((float(bbox[0]) + float(bbox[2])) / 2, float(bbox[3]))
-
-
-@router.post("/player_heatmaps/{task_id}/recreate")
-async def recreate_player_heatmaps(
-    task_id: int,
-    session: SessionDep,
-    auth_ctx: AuthContext = Depends(get_auth_context),
-) -> object:
-    require_task_access(session, task_id, auth_ctx)
-    heatmap_top_path = f"output/output_{task_id}_heatmap_top.png"
-    heatmap_bottom_path = f"output/output_{task_id}_heatmap_bottom.png"
-
-    heatmap_row = session.exec(select(PlayerHeatmapData).where(PlayerHeatmapData.task_id == task_id)).first()
-    if heatmap_row is not None:
-        top_points = heatmap_row.top_points if isinstance(heatmap_row.top_points, list) else json.loads(heatmap_row.top_points)
-        bottom_points = heatmap_row.bottom_points if isinstance(heatmap_row.bottom_points, list) else json.loads(heatmap_row.bottom_points)
-        top_tuples = [tuple(p) for p in top_points]
-        bottom_tuples = [tuple(p) for p in bottom_points]
-    else:
-        pos_row = session.exec(select(PlayerPositions).where(PlayerPositions.task_id == task_id)).first()
-        hom_row = session.exec(select(HomographyMatrices).where(HomographyMatrices.task_id == task_id)).first()
-        if pos_row is None or hom_row is None:
-            raise HTTPException(status_code=404, detail="Heatmap data not found; need processed video with player positions and court detection.")
-        positions = pos_row.positions if isinstance(pos_row.positions, dict) else json.loads(pos_row.positions)
-        matrices = hom_row.matrices if isinstance(hom_row.matrices, list) else json.loads(hom_row.matrices)
-        n = min(len(positions), len(matrices))
-        top_court_points = []
-        bottom_court_points = []
-        for i in range(n):
-            H = matrices[i]
-            if H is None:
-                continue
-            H = np.array(H, dtype=np.float32)
-            frame_pos = positions.get(str(i))
-            if not frame_pos:
-                continue
-            for key, points_list in [("top", top_court_points), ("bottom", bottom_court_points)]:
-                bbox = frame_pos.get(key)
-                foot = _foot_from_bbox(bbox)
-                if foot is None:
-                    continue
-                try:
-                    pt = np.array([[foot]], dtype=np.float32)
-                    court_pt = cv2.perspectiveTransform(pt, H)
-                    points_list.append((float(court_pt[0, 0, 0]), float(court_pt[0, 0, 1])))
-                except Exception:
-                    continue
-        top_tuples = top_court_points
-        bottom_tuples = bottom_court_points
-        if top_tuples or bottom_tuples:
-            save_heatmap_data_in_db(task_id, top_tuples, bottom_tuples)
-
-    heatmap_top = generate_player_heatmap(top_tuples)
-    heatmap_bottom = generate_player_heatmap(bottom_tuples)
-    cv2.imwrite(heatmap_top_path, heatmap_top)
-    cv2.imwrite(heatmap_bottom_path, heatmap_bottom)
-
-    return {
-        "success": True,
-        "data": {
-            "player_top_heatmap": f"/output/output_{task_id}_heatmap_top.png",
-            "player_bottom_heatmap": f"/output/output_{task_id}_heatmap_bottom.png",
-        },
-    }
+    return {"success": True, "data": data}
