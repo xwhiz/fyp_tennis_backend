@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+{% block title %}Person Detector — AceVision Admin{% endblock %}
+{% block page_title %}Person Detector{% endblock %}
+{% block content %}
+<p class="mb-4 text-sm text-zinc-400">
+  One model is active for new video tasks. Tasks already running keep the model they started with. Changes require Redis
+  (<code class="text-zinc-500">celery_result_backend</code>).
+</p>
+
+{% if not redis_configured %}
+<div class="mb-6 rounded-xl border border-amber-500/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
+  Redis URL is not set on <code class="text-amber-200/90">celery_result_backend</code>. New workers use
+  <code class="text-amber-200/90">PERSON_DETECTOR_BACKEND</code> from the environment only; switching here is disabled until
+  Redis is available.
+</div>
+{% endif %}
+
+<form method="post" action="/admin/person-detector" class="max-w-xl space-y-6 rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
+  <fieldset {% if not redis_configured %}disabled{% endif %} class="space-y-4">
+    <legend class="text-sm font-medium text-zinc-300">Active person detector</legend>
+
+    <label class="flex cursor-pointer gap-3 rounded-xl border border-zinc-800 bg-black p-4 hover:border-zinc-600">
+      <input
+        type="radio"
+        name="backend"
+        value="{{ backend_frcnn }}"
+        class="mt-1"
+        {{ 'checked' if current_backend == backend_frcnn else '' }}
+      />
+      <div>
+        <div class="font-medium text-white">Faster R-CNN ResNet50 FPN (COCO)</div>
+        <p class="mt-1 text-sm text-zinc-400">
+          Heavier and slower, but closer to the original pipeline and usually more accurate player boxes for downstream
+          stats.
+        </p>
+      </div>
+    </label>
+
+    <label class="flex cursor-pointer gap-3 rounded-xl border border-zinc-800 bg-black p-4 hover:border-zinc-600">
+      <input
+        type="radio"
+        name="backend"
+        value="{{ backend_yolo }}"
+        class="mt-1"
+        {{ 'checked' if current_backend == backend_yolo else '' }}
+      />
+      <div>
+        <div class="font-medium text-white">YOLO26x (Ultralytics)</div>
+        <p class="mt-1 text-sm text-zinc-400">
+          Faster inference. Uses <code class="text-zinc-500">yolo26x.pt</code> and a lower confidence cutoff for court
+          split; quality may differ from the ResNet pipeline.
+        </p>
+      </div>
+    </label>
+  </fieldset>
+
+  <button
+    type="submit"
+    class="rounded-xl bg-green-500 px-4 py-3 font-medium text-black hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-40"
+    {% if not redis_configured %}disabled{% endif %}
+  >
+    Save selection
+  </button>
+</form>
+
+<p class="mt-6 text-xs text-zinc-500">Current effective backend: <span class="text-zinc-300">{{ current_backend }}</span></p>
+{% endblock %}

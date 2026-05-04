@@ -1,23 +1,34 @@
+from __future__ import annotations
+
 import cv2
-import torch
-from src.core.court_reference import CourtReference
-from scipy import signal
 import numpy as np
+import torch
+from abc import ABC, abstractmethod
 from scipy.spatial import distance
 from tqdm import tqdm
 from ultralytics import YOLO
 
+import torchvision
+from torchvision.models.detection import (
+    FasterRCNN_ResNet50_FPN_Weights,
+    fasterrcnn_resnet50_fpn,
+)
 
-class PersonDetector:
-    def __init__(self, dtype=torch.FloatTensor):
-        dtype_name = str(dtype).lower()
+from src.core.court_reference import CourtReference
+from src.core.person_detector_backend import (
+    PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50,
+    PERSON_DETECTOR_BACKEND_YOLO26X,
+    normalize_person_detector_backend,
+)
+
+
+class PersonDetectorBase(ABC):
+    """Shared court masks, player filtering, and multi-frame tracking."""
+
+    def __init__(self, device: str):
         self.device = torch.device(
-            "cuda" if "cuda" in dtype_name and torch.cuda.is_available() else "cpu"
+            device if device == "cpu" or torch.cuda.is_available() else "cpu"
         )
-        self.detection_model = YOLO("yolo26x.pt")
-        if self.device.type == "cuda":
-            self.detection_model.to("cuda")
-        self.dtype = dtype
         self.court_ref = CourtReference()
         self.ref_top_court = self.court_ref.get_court_mask(2)
         self.ref_bottom_court = self.court_ref.get_court_mask(1)
@@ -26,26 +37,16 @@ class PersonDetector:
         self.counter_top = 0
         self.counter_bottom = 0
 
-    def detect(self, image, person_min_score=0.85):
-        PERSON_LABEL = 0
-        with torch.inference_mode():
-            preds = self.detection_model(image, verbose=False)[0]
+    @abstractmethod
+    def detect(self, image, person_min_score: float = 0.85):
+        """Return (list of xyxy boxes, list of confidence scores)."""
+        raise NotImplementedError
 
-        persons_boxes = []
-        probs = []
-        if preds.boxes is not None and len(preds.boxes) > 0:
-            boxes = preds.boxes.xyxy.detach().cpu().numpy()
-            labels = preds.boxes.cls.detach().cpu().numpy().astype(np.int32)
-            scores = preds.boxes.conf.detach().cpu().numpy()
-            for box, label, score in zip(boxes, labels, scores):
-                if label == PERSON_LABEL and score > person_min_score:
-                    persons_boxes.append(np.asarray(box, dtype=np.float32))
-                    probs.append(float(score))
-
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-
-        return persons_boxes, probs
+    @property
+    @abstractmethod
+    def court_split_person_min_score(self) -> float:
+        """Score threshold when splitting detections into top/bottom court regions."""
+        raise NotImplementedError
 
     def detect_top_and_bottom_players(self, image, inv_matrix, filter_players=False):
         matrix = cv2.invert(inv_matrix)[1]
@@ -57,7 +58,9 @@ class PersonDetector:
         )
         person_bboxes_top, person_bboxes_bottom = [], []
 
-        bboxes, probs = self.detect(image, person_min_score=0.5)
+        bboxes, _probs = self.detect(
+            image, person_min_score=self.court_split_person_min_score
+        )
         if len(bboxes) > 0:
             person_points = [
                 [int((bbox[2] + bbox[0]) / 2), int(bbox[3])] for bbox in bboxes
@@ -82,9 +85,7 @@ class PersonDetector:
         return person_bboxes_top, person_bboxes_bottom
 
     def filter_players(self, person_bboxes_top, person_bboxes_bottom, matrix):
-        """
-        Leave one person at the top and bottom of the tennis court
-        """
+        """Leave one person at the top and bottom of the tennis court."""
         refer_kps = np.array(self.court_ref.key_points[12:], dtype=np.float32).reshape(
             (-1, 1, 2)
         )
@@ -121,10 +122,91 @@ class PersonDetector:
                 person_top, person_bottom = [], []
             persons_top.append(person_top)
             persons_bottom.append(person_bottom)
-            
-            # Periodic memory cleanup for large batches
+
             if num_frame > 0 and num_frame % 50 == 0:
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
-        
+
         return persons_top, persons_bottom
+
+
+class FasterRcnnResnetPersonDetector(PersonDetectorBase):
+    """Faster R-CNN ResNet50 FPN (COCO) — higher quality person boxes, slower than YOLO."""
+
+    court_split_person_min_score = 0.85
+
+    def __init__(self, device: str):
+        super().__init__(device)
+        weights = FasterRCNN_ResNet50_FPN_Weights.COCO_V1
+        self.detection_model = fasterrcnn_resnet50_fpn(weights=weights)
+        self.detection_model = self.detection_model.to(self.device)
+        self.detection_model.eval()
+
+    def detect(self, image, person_min_score: float = 0.85):
+        PERSON_LABEL = 1
+        frame_tensor = image.transpose((2, 0, 1)) / 255
+        frame_tensor = (
+            torch.from_numpy(frame_tensor).unsqueeze(0).float().to(self.device)
+        )
+
+        with torch.no_grad():
+            preds = self.detection_model(frame_tensor)
+
+        persons_boxes = []
+        probs = []
+        for box, label, score in zip(
+            preds[0]["boxes"][:], preds[0]["labels"], preds[0]["scores"]
+        ):
+            if int(label) == PERSON_LABEL and float(score) > person_min_score:
+                persons_boxes.append(box.detach().cpu().numpy())
+                probs.append(float(score.detach().cpu().item()))
+
+        del frame_tensor, preds
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return persons_boxes, probs
+
+
+class YoloV26PersonDetector(PersonDetectorBase):
+    """Ultralytics YOLO26x — faster; tuned with a lower score cutoff for court split."""
+
+    court_split_person_min_score = 0.5
+
+    def __init__(self, device: str):
+        super().__init__(device)
+        self.detection_model = YOLO("yolo26x.pt")
+        if self.device.type == "cuda":
+            self.detection_model.to("cuda")
+
+    def detect(self, image, person_min_score: float = 0.85):
+        PERSON_LABEL = 0
+        with torch.inference_mode():
+            preds = self.detection_model(image, verbose=False)[0]
+
+        persons_boxes = []
+        probs = []
+        if preds.boxes is not None and len(preds.boxes) > 0:
+            boxes = preds.boxes.xyxy.detach().cpu().numpy()
+            labels = preds.boxes.cls.detach().cpu().numpy().astype(np.int32)
+            scores = preds.boxes.conf.detach().cpu().numpy()
+            for box, label, score in zip(boxes, labels, scores):
+                if int(label) == PERSON_LABEL and float(score) > person_min_score:
+                    persons_boxes.append(np.asarray(box, dtype=np.float32))
+                    probs.append(float(score))
+
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return persons_boxes, probs
+
+
+def build_person_detector(kind: str, device: str) -> PersonDetectorBase:
+    k = normalize_person_detector_backend(kind)
+    if k == PERSON_DETECTOR_BACKEND_YOLO26X:
+        return YoloV26PersonDetector(device)
+    return FasterRcnnResnetPersonDetector(device)
+
+
+# Backwards compatibility: previous single-class name mapped to YOLO implementation.
+PersonDetector = YoloV26PersonDetector

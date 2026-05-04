@@ -1,6 +1,12 @@
 """Configuration management for GLASS Storage Core."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from src.core.person_detector_backend import (
+    PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50,
+    normalize_person_detector_backend,
+)
 
 
 class Settings(BaseSettings):
@@ -29,6 +35,7 @@ class Settings(BaseSettings):
     
     # Video Processing
     video_batch_size: int = 200
+    person_detector_backend: str = PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50
     
     # Upload Settings
     upload_root_dir: str = "./uploads"
@@ -65,6 +72,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @field_validator("person_detector_backend", mode="before")
+    @classmethod
+    def _validate_person_detector_backend(cls, v):
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return PERSON_DETECTOR_BACKEND_FASTER_RCNN_RESNET50
+        return normalize_person_detector_backend(str(v))
 
 
 settings = Settings()

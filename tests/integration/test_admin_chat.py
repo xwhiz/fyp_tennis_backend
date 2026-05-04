@@ -24,10 +24,11 @@ class TestAdminDashboard:
                 follow_redirects=False,
             )
             assert login_response.status_code == 303
+            assert login_response.headers.get("location") == "/admin/chat"
 
             dashboard_response = client.get("/admin")
             assert dashboard_response.status_code == 200
-            assert "RAG Dashboard" in dashboard_response.text
+            assert "Chat Bot Management" in dashboard_response.text
 
     def test_non_admin_login_is_rejected(self):
         with Session(Engine.instance()) as session:
